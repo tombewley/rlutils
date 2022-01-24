@@ -89,13 +89,9 @@ class PbrlObserver:
             [self.P["discrete_action_map"][a] for a in actions] if "discrete_action_map" in self.P else actions.numpy(), 
             next_states.numpy()
             ]))) 
-        raise NotImplementedError()
-
-        return self.r[x] + xxx * np.sqrt(self.var[x])
-
-        # if meanvar: return (self.r[x], self.var[x])
-        # elif stochastic: return np.random.normal(loc=self.r[x], scale=np.sqrt(self.var[x]))   
-        # else: return self.r[x]
+        # TODO: Implement RUNE.
+        if "rune_coef" in self.P: return self.r[x] + self.P["rune_coef"] * np.sqrt(self.var[x])
+        else: return self.r[x]
 
     def F(self, trajectory_i, trajectory_j=None):
         """
