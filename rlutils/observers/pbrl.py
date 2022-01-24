@@ -21,7 +21,7 @@ class PbrlObserver:
         if type(features) == dict: self.feature_names, self.features = list(features.keys()), features
         elif type(features) == list: self.feature_names, self.features = features, None
         self.run_names = run_names if run_names is not None else [] # Order crucial to match with episodes.
-        self.load_episodes(episodes if episodes is not None else [[]])
+        self.load_episodes(episodes if episodes is not None else [])
         if P["interface"] is not None: self.interface = P["interface"][0](self, *P["interface"][1:])
         if "feedback_freq" in P and P["feedback_freq"] > 0:
             # Compute batch size for online.
@@ -124,45 +124,51 @@ class PbrlObserver:
         """
         self.episodes = episodes
         self.Pr = np.full((len(episodes), len(episodes)), np.nan)
-        self.n_on_prev_feedback = 0
-        self.current_batch_num = 1
+        self._n_on_prev_feedback = 0
+        self._current_batch_num = 1
+        self._current_ep = []
 
-    def per_timestep(self, _, __, state, action, next_state, ___, ____, _____, ______):     
+    def per_timestep(self, ep, __, state, action, next_state, ___, ____, _____, ______):     
         """
         Store transition for current timestep.
         """
         if "discrete_action_map" in self.P: action = self.P["discrete_action_map"][action] 
-        self.episodes[-1].append(list(state) + list(action) + list(next_state))
+        self._current_ep.append(list(state) + list(action) + list(next_state))
             
     def per_episode(self, ep): 
         """
         NOTE: To ensure video saving, this is completed *after* env.reset() is called for the next episode.
         """     
-        n = len(self.episodes)
-        if n > 0:
-            self.episodes[-1] = np.array(self.episodes[-1]) # Convert to NumPy after appending finished.
-            if "feedback_freq" in self.P and self.P["feedback_freq"] > 0 and \
-                n <= self.P["num_episodes_before_freeze"] and n % self.P["feedback_freq"] == 0:    
+        # Convert to NumPy now that appending is finished.
+        self._current_ep = np.array(self._current_ep) 
+        # Log reward sum and (if applicable) oracle reward sum.
+        logs = {"feedback_count": self.feedback_count, "reward_sum": self.F(self._current_ep)[0]} # NOTE: This overwrites that logged by the environment.
+        if self.interface.oracle is not None: logs["reward_sum_oracle"] = self.interface.oracle(self._current_ep)
+        # Retain episodes for use in reward inference with a specified frequency.
+        if (ep+1) % self.P["observe_freq"] == 0: 
+            self.episodes.append(self._current_ep)
+            n = len(self.episodes)
+            Pr_old = self.Pr; self.Pr = np.full((n, n), np.nan); self.Pr[:-1,:-1] = Pr_old
+        else: n = len(self.episodes)  
+        if "feedback_freq" in self.P and self.P["feedback_freq"] > 0:
+            assert self.P["feedback_freq"] % self.P["observe_freq"] == 0    
+            if (ep+1) % self.P["feedback_freq"] == 0 and (ep+1) <= self.P["num_episodes_before_freeze"]:    
                 # Gather a batch of feedback.
                 K = self.P["feedback_budget"] # Total feedback budget.
                 B = self.num_batches # Number of feedback batches.
-                f = self.P["feedback_freq"] # Number of episodes between feedback batches.
+                f = self.P["feedback_freq"] / self.P["observe_freq"] # Number of episodes between feedback batches.
                 c = self.P["scheduling_coef"] # How strongly to apply scheduling.
-                b = self.current_batch_num # Current batch number.
+                b = self._current_batch_num # Current batch number.
                 k_max = (K / B * (1 - c)) + (K * (f * (2*b - 1) - 1) / (B * (B*f - 1)) * c)
                 self.get_feedback(k_max=round(k_max))
                 # Update reward function.
-                self.update(history_key=n)
-                self.n_on_prev_feedback = n
-                self.current_batch_num += 1 
+                self.update(history_key=(ep+1))
+                self._n_on_prev_feedback = n
+                self._current_batch_num += 1 
         # Periodically save out and plot.
         if (ep+1) % self.P["save_freq"] == 0: self.save()
-        if (ep+1) % self.P["plot_freq"] == 0: self.make_and_save_plots(history_key=n)     
-        # Assemble logs.
-        logs = {"feedback_count": self.feedback_count, "reward_sum": self.F(self.episodes[-1])[0]} # NOTE: This overwrites that logged by the environment.
-        if self.interface.oracle is not None: logs["reward_sum_oracle"] = self.interface.oracle(self.episodes[-1])
-        # Expand data structures.
-        self.episodes.append([]); Pr_old = self.Pr; self.Pr = np.full((n+1, n+1), np.nan); self.Pr[:-1,:-1] = Pr_old   
+        if (ep+1) % self.P["plot_freq"] == 0: self.make_and_save_plots(history_key=(ep+1))     
+        self._current_ep = []
         return logs
 
     def get_feedback(self, k_max=1, ij=None): 
@@ -176,7 +182,7 @@ class PbrlObserver:
         self.interface.open()
         for k in range(k_max):
             if ij is None:
-                found, i, j, _ = self.select_i_j(w, ij_min=self.n_on_prev_feedback)
+                found, i, j, _ = self.select_i_j(w, ij_min=self._n_on_prev_feedback)
                 if not found: print("=== All rated ==="); break
             else: assert k_max == 1; i, j = ij # Force specified i, j.
             y_ij = self.interface(i, j)
@@ -338,7 +344,7 @@ class PbrlObserver:
                     plt.savefig(f"{path}/{vis_dims}_{history_key}.png")
         if False: # Psi_matrix
             raise NotImplementedError("Only works for UCB")
-            _, _, _, p = self.select_i_j(self.F_ucb_for_pairs(self.episodes), ij_min=self.n_on_prev_feedback)
+            _, _, _, p = self.select_i_j(self.F_ucb_for_pairs(self.episodes), ij_min=self._n_on_prev_feedback)
             plt.figure()
             plt.imshow(p, interpolation="none")
             plt.savefig(f"{path}/psi_matrix_{history_key}.png")
