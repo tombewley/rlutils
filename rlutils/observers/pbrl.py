@@ -64,7 +64,7 @@ class PbrlObserver:
         Map an array of transitions to an array of features.
         """
         if len(transitions.shape) == 1: transitions = transitions.reshape(1,-1) # Handle single.
-        return np.hstack([self.features[f](transitions).reshape(-1,1) for f in self.features])
+        return np.hstack([self.features[f](transitions).reshape(-1,1) for f in self.feature_names])
 
     def phi(self, features):
         """
@@ -308,10 +308,11 @@ class PbrlObserver:
         print(hr.rules(self.tree, pred_dims="reward"))
                 
     def save(self):
-        self.episodes[-1] = np.array(self.episodes[-1])
         path = f"run_logs/{self.run_names[-1]}"
         if not os.path.exists(path): os.makedirs(path)
+        f = self.features; self.features = None # NOTE: Lambda functions can't be Pickled
         dump(self, f"{path}/checkpoint_{len(self.episodes)}.joblib")
+        self.features = f
 
 # ==============================================================================
 # VISUALISATION
@@ -337,7 +338,7 @@ class PbrlObserver:
         if False: 
             self.plot_fitness_pdfs()
             plt.savefig(f"{path}/pdfs_{history_key}.png")
-        if True:
+        if False:
             if history_key in self.history: 
                 for vis_dims, vis_lims in [([2, 3], None)]:
                     self.plot_rectangles(vis_dims, vis_lims)
@@ -348,7 +349,7 @@ class PbrlObserver:
             plt.figure()
             plt.imshow(p, interpolation="none")
             plt.savefig(f"{path}/psi_matrix_{history_key}.png")
-        if False: # Tree diagram
+        if True: # Tree diagram
             if history_key in self.history: 
                 hr.diagram(self.tree, pred_dims=["reward"], verbose=True, out_name=f"{path}/diagram_{history_key}", out_as="png")
         plt.close("all")
