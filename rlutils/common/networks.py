@@ -5,7 +5,7 @@ from gym.spaces.box import Box
 
 
 class SequentialNetwork(nn.Module):
-    def __init__(self, layers=None, code=None, preset=None, input_shape=None, output_size=None, normaliser=None,
+    def __init__(self, device, layers=None, code=None, preset=None, input_shape=None, output_size=None, normaliser=None,
                  eval_only=False, optimiser=optim.Adam, lr=1e-3, clip_grads=False):
         """
         Net codes:
@@ -22,12 +22,13 @@ class SequentialNetwork(nn.Module):
             else:
                 assert preset is not None, "Must specify layers, code or preset."
                 layers = sequential_presets(preset, input_shape, output_size)
-        if normaliser is not None: layers.insert(0, Normalise(normaliser))
+        if normaliser is not None: layers.insert(0, Normalise(normaliser).to(device))
         self.layers = nn.Sequential(*layers)
         if eval_only: self.eval()
         else: 
             self.optimiser = optimiser(self.parameters(), lr=lr)
             self.clip_grads = clip_grads
+        self.to(device)
 
     def forward(self, x): return self.layers(x)
 
