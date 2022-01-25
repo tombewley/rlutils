@@ -5,7 +5,6 @@ import numpy as np
 np.set_printoptions(precision=3, suppress=True, edgeitems=30, linewidth=100000)   
 from scipy.stats import norm
 import networkx as nx
-import cv2
 from tqdm import tqdm
 from joblib import dump
 import matplotlib.pyplot as plt
@@ -595,6 +594,7 @@ class Interface:
 
 class VideoInterface(Interface):
     def __init__(self, pbrl): 
+        import cv2 # Lazy import
         Interface.__init__(self, pbrl)
         self.mapping = {81: 1., 83: 0., 32: 0.5, 27: "esc"}
 
