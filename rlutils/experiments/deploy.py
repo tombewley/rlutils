@@ -15,6 +15,9 @@ P_DEFAULT = {"num_episodes": int(1e6), "render_freq": 1}
 
 
 def train(agent, P=P_DEFAULT, renderer=None, observers=[], run_id=None, save_dir="agents"):
+    """
+    Shortcut for training; just calls deploy() with train=True.
+    """
     return deploy(agent, P, True, renderer, observers, run_id, save_dir)
 
 def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers=[], run_id=None, save_dir="agents"):
