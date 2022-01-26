@@ -22,7 +22,7 @@ class SequentialNetwork(nn.Module):
             else:
                 assert preset is not None, "Must specify layers, code or preset."
                 layers = sequential_presets(preset, input_shape, output_size)
-        if normaliser is not None: layers.insert(0, Normalise(normaliser).to(device))
+        if normaliser is not None: layers.insert(0, Normalise(normaliser=normaliser, device=device))
         self.layers = nn.Sequential(*layers)
         if eval_only: self.eval()
         else: 
@@ -66,7 +66,7 @@ def code_parser(code, input_shape, output_size):
 
 
 class Normalise(nn.Module):
-    def __init__(self, normaliser):
+    def __init__(self, normaliser, device):
         super(Normalise, self).__init__()
         # Normalise into [-1, 1] using limits of observation space.
         assert type(normaliser) == tuple and all(type(n) == Box for n in normaliser)
@@ -75,7 +75,7 @@ class Normalise(nn.Module):
             r = ((space.high - space.low) / 2.0)
             rnge += list(r)
             shift += list(r + space.low)
-        self.range, self.shift = torch.tensor(rnge), torch.tensor(shift)
+        self.range, self.shift = torch.tensor(rnge, device=device), torch.tensor(shift, device=device)
 
     def __repr__(self): return f"Normalise(range={self.range}, shift={self.shift})"
 
