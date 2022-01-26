@@ -21,12 +21,15 @@ class PbrlObserver:
         elif type(features) == list: self.feature_names, self.features = features, None
         self.run_names = run_names if run_names is not None else [] # Order crucial to match with episodes.
         self.load_episodes(episodes if episodes is not None else [])
-        if P["interface"] is not None: self.interface = P["interface"][0](self, *P["interface"][1:])
-        if "feedback_freq" in P and P["feedback_freq"] > 0:
-            # Compute batch size for online.
-            b = P["num_episodes_before_freeze"] / P["feedback_freq"]
+        if self.P["interface"] is not None: 
+            self.interface = self.P["interface"][0](self, *self.P["interface"][1:])
+        if "feedback_freq" in self.P and self.P["feedback_freq"] > 0:
+            # Compute batch size for online preference elicitation.
+            b = self.P["num_episodes_before_freeze"] / self.P["feedback_freq"]
             assert b % 1 == 0
-            self.num_batches = int(b)
+            self._num_batches = int(b)
+            self._current_batch_num = 1
+            self._n_on_prev_feedback = 0
         # Initialise empty tree.
         space = hr.Space(dim_names=["ep", "reward"] + self.feature_names)
         root = hr.node.Node(space, sorted_indices=space.all_sorted_indices) 
@@ -123,8 +126,6 @@ class PbrlObserver:
         """
         self.episodes = episodes
         self.Pr = np.full((len(episodes), len(episodes)), np.nan)
-        self._n_on_prev_feedback = 0
-        self._current_batch_num = 1
         self._current_ep = []
 
     def per_timestep(self, ep, __, state, action, next_state, ___, ____, _____, ______):     
@@ -154,43 +155,42 @@ class PbrlObserver:
             if (ep+1) % self.P["feedback_freq"] == 0 and (ep+1) <= self.P["num_episodes_before_freeze"]:    
                 # Gather a batch of feedback.
                 K = self.P["feedback_budget"] # Total feedback budget.
-                B = self.num_batches # Number of feedback batches.
+                B = self._num_batches # Number of feedback batches.
                 f = self.P["feedback_freq"] / self.P["observe_freq"] # Number of episodes between feedback batches.
                 c = self.P["scheduling_coef"] # How strongly to apply scheduling.
                 b = self._current_batch_num # Current batch number.
                 k_max = (K / B * (1 - c)) + (K * (f * (2*b - 1) - 1) / (B * (B*f - 1)) * c)
-                self.get_feedback(k_max=round(k_max))
+                self.get_feedback(k_max=round(k_max), ij_min=self._n_on_prev_feedback)
                 # Update reward function.
                 self.update(history_key=(ep+1))
-                self._n_on_prev_feedback = n
                 self._current_batch_num += 1 
+                self._n_on_prev_feedback = n
         # Periodically save out and plot.
         if (ep+1) % self.P["save_freq"] == 0: self.save()
         if (ep+1) % self.P["plot_freq"] == 0: self.make_and_save_plots(history_key=(ep+1))     
         self._current_ep = []
         return logs
 
-    def get_feedback(self, k_max=1, ij=None): 
+    def get_feedback(self, ij=None, k_max=1, ij_min=0): 
         """
-        TODO: Make sampler class in similar way to interface class?
+        TODO: Make sampler class in similar way to interface class and use __next__ method to loop through.
         """
         if "ucb" in self.P["sampling"]["weight"]: 
             w = self.F_ucb_for_pairs(self.episodes) # Only need to compute once per batch.
             if self.P["sampling"]["weight"] == "ucb_r": w = -w # Invert.
         elif self.P["sampling"]["weight"] == "uniform": n = len(self.episodes); w = np.zeros((n, n))
-        self.interface.open()
-        for k in range(k_max):
-            if ij is None:
-                found, i, j, _ = self.select_i_j(w, ij_min=self._n_on_prev_feedback)
-                if not found: print("=== All rated ==="); break
-            else: assert k_max == 1; i, j = ij # Force specified i, j.
-            y_ij = self.interface(i, j)
-            if y_ij == "esc": print("=== Feedback exited ==="); break
-            assert 0 <= y_ij <= 1
-            self.Pr[i, j] = y_ij
-            self.Pr[j, i] = 1 - y_ij
-            print(f"{k+1} / {k_max}: P({i} > {j}) = {y_ij}")
-        self.interface.close()
+        with self.interface:
+            for k in range(k_max):
+                if ij is None:
+                    found, i, j, _ = self.select_i_j(w, ij_min=ij_min)
+                    if not found: print("=== All rated ==="); break
+                else: assert k_max == 1; i, j = ij # Force specified i, j.
+                y_ij = self.interface(i, j)
+                if y_ij == "esc": print("=== Feedback exited ==="); break
+                assert 0 <= y_ij <= 1
+                self.Pr[i, j] = y_ij
+                self.Pr[j, i] = 1 - y_ij
+                print(f"{k+1} / {k_max}: P({i} > {j}) = {y_ij}")
 
     def select_i_j(self, w, ij_min=0):
         """
@@ -587,10 +587,10 @@ def split_merge_cancel(split, merge):
 # ==============================================================================
 # INTERFACES
 
-class Interface:
-    def __init__(self, pbrl): self.pbrl = pbrl
-    def open(self): pass
-    def close(self): pass
+class Interface():
+    def __init__(self, pbrl): self.pbrl, self.oracle = pbrl, None
+    def __enter__(self): pass
+    def __exit__(self, exc_type, exc_value, traceback): pass
 
 class VideoInterface(Interface):
     def __init__(self, pbrl): 
@@ -598,7 +598,7 @@ class VideoInterface(Interface):
         Interface.__init__(self, pbrl)
         self.mapping = {81: 1., 83: 0., 32: 0.5, 27: "esc"}
 
-    def open(self):
+    def __enter__(self):
         self.videos = []
         for rn in self.pbrl.run_names:
             run_videos = sorted([f"video/{rn}/{f}" for f in os.listdir(f"video/{rn}") if ".mp4" in f])
@@ -611,7 +611,7 @@ class VideoInterface(Interface):
         cv2.namedWindow("Trajectory Pairs", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("Trajectory Pairs", 1000, 500)
 
-    def close(self): 
+    def __exit__(self, exc_type, exc_value, traceback): 
         cv2.destroyAllWindows()
 
     def __call__(self, i, j):
