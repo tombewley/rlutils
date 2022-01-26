@@ -84,9 +84,9 @@ class PbrlObserver:
         Reward function, defined over individual transitions. Expects a batch of transitions as PyTorch tensors.
         """
         x = self.phi(self.feature_map(np.hstack([ # NOTE: torch -> numpy slow.
-            states.numpy(), 
-            [self.P["discrete_action_map"][a] for a in actions] if "discrete_action_map" in self.P else actions.numpy(), 
-            next_states.numpy()
+            states.cpu().numpy(), 
+            [self.P["discrete_action_map"][a] for a in actions] if "discrete_action_map" in self.P else actions.cpu().numpy(), 
+            next_states.cpu().numpy()
             ]))) 
         # TODO: Implement RUNE.
         if "rune_coef" in self.P: return self.r[x] + self.P["rune_coef"] * np.sqrt(self.var[x])

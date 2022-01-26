@@ -53,7 +53,7 @@ class StableBaselinesAgent(Agent):
         else: raise NotImplementedError()
 
     def act(self, state, explore=True, do_extra=False): 
-        action, _ = self.model.predict(state[0].numpy(), deterministic=(not explore))
+        action, _ = self.model.predict(state[0].cpu().numpy(), deterministic=(not explore))
         return action, {}
 
     # Defer to inbuilt methods from Stable Baselines.

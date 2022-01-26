@@ -23,7 +23,7 @@ class Renderer:
         return output
 
     def to_numpy(_, screen):
-        image = screen.cpu().squeeze(0).permute(1, 2, 0).numpy()
+        image = screen.squeeze(0).permute(1, 2, 0).cpu().numpy()
         if image.shape[2] == 1: image = image[:,:,0]
         return image
 

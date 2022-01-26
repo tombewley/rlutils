@@ -184,7 +184,7 @@ class Output:
 
     def _print(self, indent=0):
         tab = "    "
-        P_r, subtree_l, subtree_r = self._tuple; P_r = P_r.detach().numpy()
+        P_r, subtree_l, subtree_r = self._tuple; P_r = P_r.cpu().detach().numpy()
         return str((1 - P_r).tolist()) + "\n" \
             + ((tab * (indent+1)) + subtree_l._print(indent+1) if subtree_l is not None else "") \
             + (tab * indent) + str(P_r.tolist()) + "\n" \

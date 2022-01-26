@@ -51,10 +51,10 @@ class SteveAgent(DdpgAgent):
             else: action, extra = DdpgAgent.act(self, state, explore, do_extra); action = torch.tensor([action])
             if do_extra: 
                 sim_next_state = self.predict(state, action)
-                extra["sim_next_state"] = sim_next_state[0].numpy()
+                extra["sim_next_state"] = sim_next_state[0].cpu().numpy()
                 # NOTE: misleading as uses simulated next state rather than true one.
                 # extra["reward_components"] = self.P["reward"](state, self._action_scale(action), sim_next_state)[0] 
-            return action[0].numpy(), extra
+            return action[0].cpu().numpy(), extra
 
     def predict(self, states, actions, mode="mean"):
         """Use all models to predict the next state for an array of state-action pairs. Return either mean or all."""

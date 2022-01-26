@@ -16,7 +16,7 @@ class HrRewardsAndCosts:
     @property
     def d(self): return self.subsets.shape[2]
 
-    def __str__(self): return f"- Subsets:\n{self.subsets.numpy()}\n- Weights: {self.weights.numpy()}"
+    def __str__(self): return f"- Subsets:\n{self.subsets.cpu().numpy()}\n- Weights: {self.weights.cpu().numpy()}"
     
     def __call__(self, states, actions): return self.phi(states, actions)*self.weights
 

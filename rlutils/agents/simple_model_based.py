@@ -47,8 +47,8 @@ class SimpleModelBasedAgent(Agent):
                 best_rollout = np.argmax(returns)
                 action = first_actions[best_rollout]
                 if do_extra: extra["g_pred"] = returns[best_rollout]
-            if do_extra: extra["next_state_pred"] = self.predict(state, action)[0].numpy()
-            return action[0].numpy() if self.continuous_actions else action.item(), extra
+            if do_extra: extra["next_state_pred"] = self.predict(state, action)[0].cpu().numpy()
+            return action[0].cpu().numpy() if self.continuous_actions else action.item(), extra
 
     def predict(self, states, actions, params=False):
         """Use model to predict the next state for an array of state-action pairs."""
