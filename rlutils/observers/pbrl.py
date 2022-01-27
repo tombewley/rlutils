@@ -128,7 +128,7 @@ class PbrlObserver:
         self.Pr = np.full((len(episodes), len(episodes)), np.nan)
         self._current_ep = []
 
-    def per_timestep(self, ep, __, state, action, next_state, ___, ____, _____, ______):     
+    def per_timestep(self, ep, t, state, action, next_state, reward, done, info, extra):     
         """
         Store transition for current timestep.
         """
@@ -304,7 +304,7 @@ class PbrlObserver:
         self.history[history_key] = {"split": history_split, "merge": history_merge, "m": self.m}
         print(self.tree.space)
         print(self.tree)
-        print(hr.rules(self.tree, pred_dims="reward"))
+        print(hr.rules(self.tree, pred_dims="reward"))#, out_name="tree_func"))
                 
     def save(self):
 

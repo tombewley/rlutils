@@ -14,13 +14,13 @@ TODO: Repeated calls with persistent run_id causes Monitor wrapper to be re-appl
 P_DEFAULT = {"num_episodes": int(1e6), "render_freq": 1}
 
 
-def train(agent, P=P_DEFAULT, renderer=None, observers=[], run_id=None, save_dir="agents"):
+def train(agent, P=P_DEFAULT, renderer=None, observers={}, run_id=None, save_dir="agents"):
     """
     Shortcut for training; just calls deploy() with train=True.
     """
     return deploy(agent, P, True, renderer, observers, run_id, save_dir)
 
-def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers=[], run_id=None, save_dir="agents"):
+def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers={}, run_id=None, save_dir="agents"):
 
     do_extra = "do_extra" in P and P["do_extra"] # Whether or not to request extra predictions from the agent.
     do_wandb = "wandb_monitor" in P and P["wandb_monitor"]
@@ -40,7 +40,7 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers=[], run_id=
             id=run_id, 
             resume=resume, 
             monitor_gym="video_to_wandb" in P and P["video_to_wandb"],
-            config={**agent.P, **P})
+            config={**agent.P, **P, **{n: o.P for n, o in observers.items()}})
         run_name = run.name
         # if train: # TODO: Weight monitoring causes an error with STEVE.
             # try: 
@@ -55,7 +55,7 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers=[], run_id=
         import time; run_id, run_name = None, time.strftime("%Y-%m-%d_%H-%M-%S")
 
     # Tell observers what the run name is.
-    for o in observers: o.run_names.append(run_name) 
+    for o in observers.values(): o.run_names.append(run_name) 
 
     # Add wrappers to environment.
     if "episode_time_limit" in P and P["episode_time_limit"]: # Time limit.
@@ -90,7 +90,7 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers=[], run_id=
                                 # info["reward_components"] if do_reward_decomposition else reward, 
 
                 # Send all information relating to the current timestep to to the observers.
-                for o in observers: o.per_timestep(ep, t, state, action, next_state, reward, done, info, extra)
+                for o in observers.values(): o.per_timestep(ep, t, state, action, next_state, reward, done, info, extra)
 
                 # Render the environment if applicable.
                 if render_this_ep: agent.env.render()
@@ -103,7 +103,7 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers=[], run_id=
             logs = {"reward_sum": reward_sum}
             if train: logs.update(agent.per_episode())    
             elif hasattr(agent, "per_episode_deploy"): logs.update(agent.per_episode_deploy())   
-            for o in observers: logs.update(o.per_episode(ep))
+            for o in observers.values(): logs.update(o.per_episode(ep))
 
             # Send logs to Weights & Biases if applicable.
             if do_wandb: wandb.log(logs)
@@ -120,13 +120,13 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers=[], run_id=
 
 # TODO: Move elsewhere.
 class SumLogger:
-    def __init__(self, name, info_or_extra, key): 
-        self.name, self.info_or_extra, self.key = name, info_or_extra, key
+    def __init__(self, P): 
+        self.P = P
         self.run_names = []
-    def per_timestep(self,ep, t, state, action, next_state, reward, done, info, extra):
-        if self.info_or_extra == "info": c = info[self.key]
-        elif self.info_or_extra == "extra": c = extra[self.key]
+    def per_timestep(self, ep, t, state, action, next_state, reward, done, info, extra):
+        if self.P["source"] == "info": c = info[self.P["key"]]
+        elif self.P["source"] == "extra": c = extra[self.P["key"]]
         if t == 0: self.sums = np.array(c)
         else: self.sums += c
     def per_episode(self, ep): 
-        return {f"{self.name}_{c}": r for c, r in enumerate(self.sums)}
+        return {f"{self.P['name']}_{c}": r for c, r in enumerate(self.sums)}
