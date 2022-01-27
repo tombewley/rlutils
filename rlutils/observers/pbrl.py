@@ -447,7 +447,7 @@ class PbrlObserver:
         elif vs == "ground_truth":
             assert self.interface.oracle is not None
             if type(self.interface.oracle) == list: baseline = self.interface.oracle
-            else: baseline = [self.interface.oracle(ep) for ep in self.episodes]
+            else: baseline = [sum(self.interface.oracle(ep)) for ep in self.episodes]
             xlabel = "Oracle Fitness"
             ranking = np.argsort(baseline)
         mu, var = np.array([self.F(self.episodes[i]) for i in ranking]).T
