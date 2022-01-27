@@ -34,7 +34,7 @@ class PbrlObserver:
         space = hr.Space(dim_names=["ep", "reward"] + self.feature_names)
         root = hr.node.Node(space, sorted_indices=space.all_sorted_indices) 
         self.tree = hr.tree.Tree(
-            name="reward_model", 
+            name="reward_function", 
             root=root, 
             split_dims=space.idxify(self.feature_names), 
             eval_dims=space.idxify(["reward"])
@@ -102,11 +102,11 @@ class PbrlObserver:
         n = (self.n(trajectory_i) if trajectory_j is None else self.n(trajectory_i)-self.n(trajectory_j))
         return [np.matmul(n, self.r), np.matmul(n, np.matmul(np.diag(self.var), n.T))]
 
-    def F_ucb_for_pairs(self, episodes):
+    def F_ucb_for_pairs(self, trajectories):
         """
-        Compute UCB fitness for a list of episodes and sum for all pairs to create a matrix.
+        Compute UCB fitness for a sequence of trajectories and sum for all pairs to create a matrix.
         """
-        mu, var = np.array([self.F(ep) for ep in episodes]).T
+        mu, var = np.array([self.F(tr) for tr in trajectories]).T
         F_ucb = mu + self.P["sampling"]["num_std"] * np.sqrt(var)
         return np.add(F_ucb.reshape(-1,1), F_ucb.reshape(1,-1))
 
@@ -167,7 +167,7 @@ class PbrlObserver:
                 self._n_on_prev_feedback = n
         # Periodically save out and plot.
         if (ep+1) % self.P["save_freq"] == 0: self.save()
-        if (ep+1) % self.P["plot_freq"] == 0: self.make_and_save_plots(history_key=(ep+1))     
+        if (ep+1) % self.P["log_freq"] == 0: self.make_and_save_logs(history_key=(ep+1))     
         self._current_ep = []
         return logs
 
@@ -304,7 +304,7 @@ class PbrlObserver:
         self.history[history_key] = {"split": history_split, "merge": history_merge, "m": self.m}
         print(self.tree.space)
         print(self.tree)
-        print(hr.rules(self.tree, pred_dims="reward"))#, out_name="tree_func"))
+        print(hr.rules(self.tree, pred_dims="reward", sf=5))#, out_name="tree_func"))
                 
     def save(self):
 
@@ -350,7 +350,7 @@ class PbrlObserver:
 # ==============================================================================
 # VISUALISATION
 
-    def make_and_save_plots(self, history_key):
+    def make_and_save_logs(self, history_key):
         """Multi-plot generation and saving, to be called periodically after reward function is updated."""
         path = f"run_logs/{self.run_names[-1]}"
         if not os.path.exists(path): os.makedirs(path)
@@ -377,14 +377,18 @@ class PbrlObserver:
                     self.plot_rectangles(vis_dims, vis_lims)
                     plt.savefig(f"{path}/{vis_dims}_{history_key}.png")
         if False: # Psi_matrix
-            raise NotImplementedError("Only works for UCB")
+            assert self.P["sampling"]["weight"] == "ucb", "Psi matrix only implemented for UCB"
             _, _, _, p = self.select_i_j(self.F_ucb_for_pairs(self.episodes), ij_min=self._n_on_prev_feedback)
             plt.figure()
             plt.imshow(p, interpolation="none")
             plt.savefig(f"{path}/psi_matrix_{history_key}.png")
-        if True: # Tree diagram
+        if True: # Tree as diagram
             if history_key in self.history: 
-                hr.diagram(self.tree, pred_dims=["reward"], verbose=True, out_name=f"{path}/diagram_{history_key}", out_as="png")
+                hr.diagram(self.tree, pred_dims=["reward"], verbose=True, out_name=f"{path}/tree_{history_key}", out_as="png")
+        if True: # Tree as Python function
+            if history_key in self.history: 
+                hr.rules(self.tree, pred_dims="reward", sf=None, out_name=f"{path}/tree_{history_key}.py")
+        
         plt.close("all")
 
     def plot_loss_over_merge(self, history_key):
