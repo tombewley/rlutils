@@ -19,8 +19,8 @@ class DqnAgent(Agent):
             net_preset = "CartPoleQ_Pixels"
             net_code, input_shape, output_size = None, self.env.observation_space.shape, self.env.action_space.n*m
         else: net_code, net_preset, input_shape, output_size = self.P["net_Q"], None, self.env.observation_space.shape[0], self.env.action_space.n*m
-        self.Q = SequentialNetwork(code=net_code, preset=net_preset, input_shape=input_shape, output_size=output_size, lr=self.P["lr_Q"], clip_grads=True).to(self.device)
-        self.Q_target = SequentialNetwork(code=net_code, preset=net_preset, input_shape=input_shape, output_size=output_size, eval_only=True).to(self.device)
+        self.Q = SequentialNetwork(code=net_code, preset=net_preset, input_shape=input_shape, output_size=output_size, lr=self.P["lr_Q"], clip_grads=True, device=self.device)
+        self.Q_target = SequentialNetwork(code=net_code, preset=net_preset, input_shape=input_shape, output_size=output_size, eval_only=True, device=self.device)
         self.Q_target.load_state_dict(self.Q.state_dict()) # Clone.
         # Create replay memory.
         self.memory = ReplayMemory(self.P["replay_capacity"])

@@ -32,7 +32,7 @@ class SteveAgent(DdpgAgent):
             self.nonfixed_dim = self.P["nonfixed_dim"] if "nonfixed_dim" in self.P else self.env.observation_space.shape[0] 
             self.fixed_pad = torch.nn.ZeroPad2d((0, self.env.observation_space.shape[0] - self.nonfixed_dim, 0, 0))
             action_dim = self.env.action_space.shape[0]        
-        self.models = [SequentialNetwork(code=self.P["net_model"], input_shape=self.nonfixed_dim+action_dim, output_size=self.nonfixed_dim, lr=self.P["lr_model"]).to(self.device) for _ in range(self.P["num_models"])]
+        self.models = [SequentialNetwork(code=self.P["net_model"], input_shape=self.nonfixed_dim+action_dim, output_size=self.nonfixed_dim, lr=self.P["lr_model"], device=self.device) for _ in range(self.P["num_models"])]
         # Parameters for action scaling.
         self.act_k = torch.tensor((self.env.action_space.high - self.env.action_space.low) / 2.)
         self.act_b = torch.tensor((self.env.action_space.high + self.env.action_space.low) / 2.)

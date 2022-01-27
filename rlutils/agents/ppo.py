@@ -21,9 +21,9 @@ class PpoAgent(Agent):
         self.action_dim = self.env.action_space.shape[0] if self.continuous_actions else self.env.action_space.n
         self.pi, self.pi_new = [SequentialNetwork(code=(self.P["net_pi_cont"] if self.continuous_actions else self.P["net_pi_disc"]), 
             input_shape=self.env.observation_space.shape[0], output_size=self.action_dim, 
-            lr=self.P["lr_pi"], eval_only=eval_only).to(self.device) for eval_only in (True, False)]
+            lr=self.P["lr_pi"], eval_only=eval_only, device=self.device) for eval_only in (True, False)]
         self.pi_new.load_state_dict(self.pi.state_dict()) # Require a copy of pi to perform clipping.
-        self.V = SequentialNetwork(code=self.P["net_V"], input_shape=self.env.observation_space.shape[0], output_size=1, lr=self.P["lr_V"]).to(self.device)
+        self.V = SequentialNetwork(code=self.P["net_V"], input_shape=self.env.observation_space.shape[0], output_size=1, lr=self.P["lr_V"], device=self.device)
         # Create replay memory. Note that PPO is on-policy so this is cleared after each update.
         self.memory = PpoMemory()
         if self.continuous_actions:
@@ -41,19 +41,20 @@ class PpoAgent(Agent):
 
     def act(self, state, explore=True, do_extra=False):
         """Deterministic action selection plus additive noise for continuous, probabilistic action selection for discrete."""
-        if self.continuous_actions:
-            action_greedy = self.pi(state)
-            dist = MultivariateNormal(action_greedy, torch.diag(self.noise).unsqueeze(dim=0))
-            extra = {"action_greedy": action_greedy}
-        else:
-            action_probs = self.pi(state)
-            dist = Categorical(action_probs) 
-            extra = {"pi": action_probs.cpu().detach().numpy()} if do_extra else {}
-        action = dist.sample()
-        if self.continuous_actions: action = torch.clamp(action, -1, 1)
-        self.last_action = action
-        self.last_log_prob = dist.log_prob(action)
-        return action.cpu().detach().numpy()[0] if self.continuous_actions else action.item(), extra
+        with torch.no_grad():
+            if self.continuous_actions:
+                action_greedy = self.pi(state)
+                dist = MultivariateNormal(action_greedy, torch.diag(self.noise).unsqueeze(dim=0))
+                extra = {"action_greedy": action_greedy}
+            else:
+                action_probs = self.pi(state)
+                dist = Categorical(action_probs) 
+                extra = {"pi": action_probs.cpu().numpy()} if do_extra else {}
+            action = dist.sample()
+            if self.continuous_actions: action = torch.clamp(action, -1, 1)
+            self.last_action = action
+            self.last_log_prob = dist.log_prob(action)
+            return action.cpu().numpy()[0] if self.continuous_actions else action.item(), extra
 
     def update_on_experience(self):
         """Use the latest batch of experience to update the policy and value network parameters."""

@@ -17,8 +17,8 @@ class TreeqnAgent(DqnAgent):
         Agent.__init__(self, env, hyperparameters) # NOTE: Use generic initialisation not DQN!
         # Create tree-structured decompositional Psi network.
         code_node, code_horizon, input_shape, num_actions = self.P["net_node"], self.P["net_horizon"], self.env.observation_space.shape[0], self.env.action_space.n
-        self.Psi = TreeNetwork(code_node, code_horizon, input_shape, num_actions, lr=self.P["lr_Q"]).to(self.device)
-        self.Psi_target = TreeNetwork(code_node, code_horizon, input_shape, num_actions, eval_only=True).to(self.device)
+        self.Psi = TreeNetwork(code_node, code_horizon, input_shape, num_actions, lr=self.P["lr_Q"], device=self.device)
+        self.Psi_target = TreeNetwork(code_node, code_horizon, input_shape, num_actions, eval_only=True, device=self.device)
         self.Psi_target.load_state_dict(self.Psi.state_dict()) # Clone.
         # Create replay memory.
         self.memory = ReplayMemory(self.P["replay_capacity"])

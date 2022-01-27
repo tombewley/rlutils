@@ -24,7 +24,7 @@ class SimpleModelBasedAgent(Agent):
         # Create model network.
         if len(self.env.observation_space.shape) > 1: raise NotImplementedError()
         else: self.state_dim, action_dim = self.env.observation_space.shape[0], (self.env.action_space.shape[0] if self.continuous_actions else 1) 
-        self.model = SequentialNetwork(code=self.P["net_model"], input_shape=self.state_dim+action_dim, output_size=self.state_dim*(2 if self.P["probabilistic"] else 1), lr=self.P["lr_model"]).to(self.device)
+        self.model = SequentialNetwork(code=self.P["net_model"], input_shape=self.state_dim+action_dim, output_size=self.state_dim*(2 if self.P["probabilistic"] else 1), lr=self.P["lr_model"], device=self.device)
         # Create replay memory in two components: one for random transitions one for on-policy transitions.
         self.random_memory = ReplayMemory(self.P["num_random_steps"])
         # NOTE: Currently MBRL-Lib says fixed bounds "work better" than learnt ones. Using values from there (note std instead of var).
@@ -109,7 +109,7 @@ class SimpleModelBasedAgent(Agent):
         Then select the first action from the rollout with maximum return."""
         returns = []; first_actions = []
         for _ in range(self.P["num_rollouts"]):
-            rollout_state, rollout_return = state.detach().clone().to(self.device), 0
+            rollout_state, rollout_return = state.clone().to(self.device), 0
             for t in range(self.P["rollout_horizon"]):
                 rollout_action = torch.tensor([self.env.action_space.sample()]) # Random action selection.
                 if t == 0: first_actions.append(rollout_action)       

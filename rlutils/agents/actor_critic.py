@@ -16,8 +16,8 @@ class ActorCriticAgent(Agent):
         self.eps = np.finfo(np.float32).eps.item() # Small float used to prevent div/0 errors.
         # Create pi and V networks.
         if len(self.env.observation_space.shape) > 1: raise NotImplementedError()
-        self.pi = SequentialNetwork(code=self.P["net_pi"], input_shape=self.env.observation_space.shape[0], output_size=self.env.action_space.n, lr=self.P["lr_pi"]).to(self.device)
-        self.V = SequentialNetwork(code=self.P["net_V"], input_shape=self.env.observation_space.shape[0], output_size=1, lr=self.P["lr_V"]).to(self.device)
+        self.pi = SequentialNetwork(code=self.P["net_pi"], input_shape=self.env.observation_space.shape[0], output_size=self.env.action_space.n, lr=self.P["lr_pi"], device=self.device)
+        self.V = SequentialNetwork(code=self.P["net_V"], input_shape=self.env.observation_space.shape[0], output_size=1, lr=self.P["lr_V"], device=self.device)
         # Tracking variables.
         self.last_l_v = None # Log probability of action and value for previous timestep.
         self.ep_losses = []

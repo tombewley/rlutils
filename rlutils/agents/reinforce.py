@@ -15,9 +15,9 @@ class ReinforceAgent(Agent):
         Agent.__init__(self, env, hyperparameters)
         # Create pi network (and V if using advantage baselining).
         if len(self.env.observation_space.shape) > 1: raise NotImplementedError()
-        self.pi = SequentialNetwork(code=self.P["net_pi"], input_shape=self.env.observation_space.shape[0], output_size=self.env.action_space.n, lr=self.P["lr_pi"]).to(self.device)
+        self.pi = SequentialNetwork(code=self.P["net_pi"], input_shape=self.env.observation_space.shape[0], output_size=self.env.action_space.n, lr=self.P["lr_pi"], device=self.device)
         if self.P["baseline"] == "adv":
-            self.V = SequentialNetwork(code=self.P["net_V"], input_shape=self.env.observation_space.shape[0], output_size=1, lr=self.P["lr_V"]).to(self.device)
+            self.V = SequentialNetwork(code=self.P["net_V"], input_shape=self.env.observation_space.shape[0], output_size=1, lr=self.P["lr_V"], device=self.device)
         else: self.V = None
         # Small float used to prevent div/0 errors.
         self.eps = np.finfo(np.float32).eps.item() 
@@ -27,18 +27,18 @@ class ReinforceAgent(Agent):
 
     def act(self, state, explore=True, do_extra=False):
         """Probabilistic action selection."""
-        # state = state.to(self.device)
-        if self.V is not None: action_probs, value = self.pi(state), self.V(state)
-        else: action_probs = self.pi(state)
-        dist = Categorical(action_probs) # Categorical action distribution.
-        action = dist.sample()
-        extra = {"pi": action_probs.cpu().detach().numpy()} if do_extra else {}
-        if self.V is not None: 
-            self.ep_predictions.append((dist.log_prob(action), value[0]))
-            if do_extra: extra["V"] = value[0].item()
-        else: 
-            self.ep_predictions.append(dist.log_prob(action))
-        return action.item(), extra
+        with torch.no_grad():
+            if self.V is not None: action_probs, value = self.pi(state), self.V(state)
+            else: action_probs = self.pi(state)
+            dist = Categorical(action_probs) # Categorical action distribution.
+            action = dist.sample()
+            extra = {"pi": action_probs.cpu().detach().numpy()} if do_extra else {}
+            if self.V is not None: 
+                self.ep_predictions.append((dist.log_prob(action), value[0]))
+                if do_extra: extra["V"] = value[0].item()
+            else: 
+                self.ep_predictions.append(dist.log_prob(action))
+            return action.item(), extra
 
     def update_on_episode(self):
         """Use the latest episode of experience to update the policy (and value) network parameters."""

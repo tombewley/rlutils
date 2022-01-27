@@ -28,7 +28,7 @@ class DiaynAgent(SacAgent):
             if k != "sac_parameters": self.P[k] = v
         # Create skill discriminator network, optionally accepting action dimensions as inputs alongside state dimensions.
         disc_input = self.state_dim + (self.env.action_space.shape[0] if self.P["include_actions"] else 0)
-        self.discriminator = SequentialNetwork(code=self.P["net_disc"], input_shape=disc_input, output_size=self.P["num_skills"], lr=self.P["lr_disc"]).to(self.device)
+        self.discriminator = SequentialNetwork(code=self.P["net_disc"], input_shape=disc_input, output_size=self.P["num_skills"], lr=self.P["lr_disc"], device=self.device)
         # Skill distribution.
         self.p_z = np.full(self.P["num_skills"], 1.0 / self.P["num_skills"]) # NOTE: Uniform.
         # Tracking variables.
