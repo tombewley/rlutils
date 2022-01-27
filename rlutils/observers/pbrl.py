@@ -23,7 +23,9 @@ class PbrlObserver:
         self.load_episodes(episodes if episodes is not None else [])
         if self.P["interface"] is not None: 
             self.interface = self.P["interface"][0](self, *self.P["interface"][1:])
-        if "feedback_freq" in self.P and self.P["feedback_freq"] > 0:
+        if "feedback_budget" in self.P and self.P["feedback_budget"] > 0:
+            assert self.P["feedback_freq"] % self.P["observe_freq"] == 0    
+            # TODO: More assertions here
             # Compute batch size for online preference elicitation.
             b = self.P["num_episodes_before_freeze"] / self.P["feedback_freq"]
             assert b % 1 == 0
@@ -65,13 +67,13 @@ class PbrlObserver:
         """
         Map an array of transitions to an array of features.
         """
-        if len(transitions.shape) == 1: transitions = transitions.reshape(1,-1) # Handle single.
         return np.hstack([self.features[f](transitions).reshape(-1,1) for f in self.feature_names])
 
     def phi(self, features):
         """
         Map an array of features to a vector of component indices.
         """
+        # if len(transitions.shape) == 1: transitions = transitions.reshape(1,-1) # Handle single.
         return [self.tree.leaves.index(next(iter(self.tree.propagate([None,None]+list(f), mode="max")))) for f in features]
 
     def n(self, transitions):
@@ -84,16 +86,21 @@ class PbrlObserver:
 
     def reward(self, states, actions, next_states):
         """
-        Reward function, defined over individual transitions. Expects a batch of transitions as PyTorch tensors.
+        Reward function, defined over individual transitions. Expects a batch of transitions as three PyTorch tensors.
         """
-        x = self.phi(self.feature_map(np.hstack([ # NOTE: torch -> numpy slow.
+        transitions = np.hstack([ # NOTE: PyTorch -> NumPy is quite slow.
             states.cpu().numpy(), 
             [self.P["discrete_action_map"][a] for a in actions] if "discrete_action_map" in self.P else actions.cpu().numpy(), 
             next_states.cpu().numpy()
-            ]))) 
-        # TODO: Implement RUNE.
-        if "rune_coef" in self.P: return self.r[x] + self.P["rune_coef"] * np.sqrt(self.var[x])
-        else: return self.r[x]
+            ])
+        if self.P["reward_source"] == "tree":
+            x = self.phi(self.feature_map(transitions)) 
+            # TODO: Implement RUNE.
+            if "rune_coef" in self.P: return self.r[x] + self.P["rune_coef"] * np.sqrt(self.var[x])
+            else: return self.r[x]
+        elif self.P["reward_source"] == "oracle":
+            return self.interface.oracle(transitions)
+        elif self.P["reward_source"] == "extrinsic": raise Exception()
 
     def F(self, trajectory_i, trajectory_j=None):
         """
@@ -141,17 +148,22 @@ class PbrlObserver:
         """     
         # Convert to NumPy now that appending is finished.
         self._current_ep = np.array(self._current_ep) 
-        # Log reward sum and (if applicable) oracle reward sum.
-        logs = {"feedback_count": self.feedback_count, "reward_sum": self.F(self._current_ep)[0]} # NOTE: This overwrites that logged by the environment.
-        if self.interface.oracle is not None: logs["reward_sum_oracle"] = self.interface.oracle(self._current_ep)
+        logs = {}
+        # Log reward sums.
+        if self.P["reward_source"] == "extrinsic": pass
+        elif self.P["reward_source"] == "tree": 
+            logs["reward_sum"] = self.F(self._current_ep)[0] # NOTE: This overwrites that logged by the environment.
+        if self.interface.oracle is not None: 
+            rso = sum(self.interface.oracle(self._current_ep))
+            if self.P["reward_source"] == "oracle": logs["reward_sum"] = rso
+            else: logs["reward_sum_oracle"] = rso
         # Retain episodes for use in reward inference with a specified frequency.
-        if (ep+1) % self.P["observe_freq"] == 0: 
+        if "observe_freq" in self.P and self.P["observe_freq"] > 0 and (ep+1) % self.P["observe_freq"] == 0: 
             self.episodes.append(self._current_ep)
             n = len(self.episodes)
             Pr_old = self.Pr; self.Pr = np.full((n, n), np.nan); self.Pr[:-1,:-1] = Pr_old
         else: n = len(self.episodes)  
-        if "feedback_freq" in self.P and self.P["feedback_freq"] > 0:
-            assert self.P["feedback_freq"] % self.P["observe_freq"] == 0    
+        if "feedback_budget" in self.P and self.P["feedback_budget"] > 0:
             if (ep+1) % self.P["feedback_freq"] == 0 and (ep+1) <= self.P["num_episodes_before_freeze"]:    
                 # Gather a batch of feedback.
                 K = self.P["feedback_budget"] # Total feedback budget.
@@ -165,9 +177,10 @@ class PbrlObserver:
                 self.update(history_key=(ep+1))
                 self._current_batch_num += 1 
                 self._n_on_prev_feedback = n
-        # Periodically save out and plot.
-        if (ep+1) % self.P["save_freq"] == 0: self.save()
-        if (ep+1) % self.P["log_freq"] == 0: self.make_and_save_logs(history_key=(ep+1))     
+            logs["feedback_count"] = self.feedback_count
+            # Periodically save out and plot.
+            if (ep+1) % self.P["save_freq"] == 0: self.save()
+            if (ep+1) % self.P["log_freq"] == 0: self.make_and_save_logs(history_key=(ep+1))   
         self._current_ep = []
         return logs
 
@@ -641,7 +654,7 @@ class OracleInterface(Interface):
 
     def __call__(self, i, j): 
         diff = (self.oracle[i] - self.oracle[j] if type(self.oracle) == list # Lookup 
-                else self.oracle(self.pbrl.episodes[i]) - self.oracle(self.pbrl.episodes[j])) # Function
+                else sum(self.oracle(self.pbrl.episodes[i])) - sum(self.oracle(self.pbrl.episodes[j]))) # Function
         if diff > 0: return 1. # Positive diff means i preferred.
         if diff < 1: return 0.
         return 0.5
