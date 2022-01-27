@@ -100,7 +100,7 @@ class PbrlObserver:
             else: return self.r[x]
         elif self.P["reward_source"] == "oracle":
             return self.interface.oracle(transitions)
-        elif self.P["reward_source"] == "extrinsic": raise Exception()
+        elif self.P["reward_source"] == "extrinsic": raise Exception("This shouldn't have been called. Unwanted call of pbrl.link(agent)?")
 
     def F(self, trajectory_i, trajectory_j=None):
         """
@@ -150,13 +150,10 @@ class PbrlObserver:
         self._current_ep = np.array(self._current_ep) 
         logs = {}
         # Log reward sums.
-        if self.P["reward_source"] == "extrinsic": pass
-        elif self.P["reward_source"] == "tree": 
-            logs["reward_sum"] = self.F(self._current_ep)[0] # NOTE: This overwrites that logged by the environment.
+        if self.P["reward_source"] == "tree": 
+            logs["reward_sum_tree"] = self.F(self._current_ep)[0] # NOTE: This overwrites that logged by the environment.
         if self.interface.oracle is not None: 
-            rso = sum(self.interface.oracle(self._current_ep))
-            if self.P["reward_source"] == "oracle": logs["reward_sum"] = rso
-            else: logs["reward_sum_oracle"] = rso
+            logs["reward_sum_oracle"] = sum(self.interface.oracle(self._current_ep))
         # Retain episodes for use in reward inference with a specified frequency.
         if "observe_freq" in self.P and self.P["observe_freq"] > 0 and (ep+1) % self.P["observe_freq"] == 0: 
             self.episodes.append(self._current_ep)
