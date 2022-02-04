@@ -252,21 +252,22 @@ class PbrlObserver:
         # Split into training and validation sets.
         Pr_train, Pr_val = train_val_split(self.Pr)
                 
-        A, d, connected = construct_A_and_d(Pr_train, self.P["p_clip"])
-        print(f"Connected episodes: {len(connected)} / {len(self.episodes)}")
-        if len(connected) == 0: print("=== None connected ==="); return
+        A, d, self._connected = construct_A_and_d(Pr_train, self.P["p_clip"])
+        print(f"Connected episodes: {len(self._connected)} / {len(self.episodes)}")
+        if len(self._connected) == 0: print("=== None connected ==="); return
 
         # Compute fitness estimates for episodes that are connected to the training set comparison graph.
-        ep_fitness_cv = fitness_case_v(A, d)
+        self._ep_fitness_cv = fitness_case_v(A, d)
 
-        # Uniform temporal prior.
-        ep_length = np.array([len(self.episodes[i]) for i in connected])
-        reward_target = ep_fitness_cv
+        # Uniform temporal prior. 
+        # NOTE: scaling by episode lengths (making ep fitness correspond to sum not mean) causes weird behaviour.
+        ep_length = np.array([len(self.episodes[i]) for i in self._connected])
+        reward_target = self._ep_fitness_cv # * ep_length.mean() / ep_length
         
         # Populate tree. 
         self.tree.space.data = np.hstack((
-            np.vstack([np.array([[i, r]] * l) for (i, r, l) in zip(connected, reward_target, ep_length)]), # Episode number and reward target.
-            self.feature_map(np.vstack([self.episodes[i] for i in connected]))                             # Feature vector.
+            np.vstack([np.array([[i, r]] * l) for (i, r, l) in zip(self._connected, reward_target, ep_length)]), # Episode number and reward target.
+            self.feature_map(np.vstack([self.episodes[i] for i in self._connected]))                             # Feature vector.
             ))
         if reset_tree: self.tree.prune_to(self.tree.root) 
         self.tree.populate()
@@ -283,7 +284,7 @@ class PbrlObserver:
                     history_split.append([self.m, node, dim, threshold, None, sum(self.tree.gather(("var_sum", "reward"))) / num_samples])        
         
         # Perform minimal cost complexity pruning until labelling loss is minimised.
-        N = np.array([self.n(self.episodes[i]) for i in connected])
+        N = np.array([self.n(self.episodes[i]) for i in self._connected])
         tree_before_merge = self.tree.clone()                
         history_merge, parent_num, pruned_nums = [], None, None
         with tqdm(total=self.P["m_max"], initial=self.m, desc="Merging") as pbar:
@@ -447,11 +448,9 @@ class PbrlObserver:
             - Ground truth fitness if an oracle is available    
         """
         print("NOTE: plot_alignment() is expensive!")
-        A, d, connected = construct_A_and_d(self.Pr, self.P["p_clip"])
-        case_v = fitness_case_v(A, d)
         if vs == "case_v": 
-            baseline, xlabel = case_v, "Case V Fitness"
-            ranking = [connected[i] for i in np.argsort(baseline)]
+            baseline, xlabel = self._ep_fitness_cv, "Case V Fitness"
+            ranking = [self._connected[i] for i in np.argsort(baseline)]
         elif vs == "ground_truth":
             assert self.interface.oracle is not None
             if type(self.interface.oracle) == list: baseline = self.interface.oracle
@@ -462,7 +461,7 @@ class PbrlObserver:
         std = np.sqrt(var)
         if ax is None: _, ax = plt.subplots()
         baseline_sorted = sorted(baseline)
-        connected_set = set(connected)
+        connected_set = set(self._connected)
         ax.scatter(baseline_sorted, mu, s=3, c=["k" if i in connected_set else "r" for i in ranking])
         ax.fill_between(baseline_sorted, mu-std, mu+std, color=[.8,.8,.8], zorder=-1, lw=0)
         ax.set_xlabel(xlabel); ax.set_ylabel("Predicted Fitness")
@@ -470,8 +469,8 @@ class PbrlObserver:
             baseline_conn, case_v_conn = [], []
             for i in ranking:
                 try:
-                    c_i = connected.index(i)
-                    baseline_conn.append(baseline[i]); case_v_conn.append(case_v[c_i])
+                    c_i = self._connected.index(i)
+                    baseline_conn.append(baseline[i]); case_v_conn.append(self._ep_fitness_cv[c_i])
                 except: continue
             ax2 = ax.twinx()
             ax2.scatter(baseline_conn, case_v_conn, s=3, c="b")
@@ -508,16 +507,33 @@ class PbrlObserver:
         self.graph = nx.DiGraph()
         n = len(self.episodes)
         self.graph.add_nodes_from(range(n), fitness=0)
-        for i in range(n): self.graph.nodes[i]["fitness"] = self.F(self.episodes[i])[0]
+        for i in range(n): 
+            self.graph.nodes[i]["fitness"] = self.F(self.episodes[i])[0]
+            self.graph.nodes[i]["fitness_cv"] = None
+        for i, f in zip(self._connected, self._ep_fitness_cv): 
+            self.graph.nodes[i]["fitness_cv"] = f * len(self.episodes[i])
         self.graph.add_weighted_edges_from([(j, i, self.Pr[i,j]) for i in range(n) for j in range(n) if not np.isnan(self.Pr[i,j])])
         # Graph plotting.
         plt.figure(figsize=(12, 12))
+        fitness = list(nx.get_node_attributes(self.graph, "fitness").values())
+        fitness_cv = list(nx.get_node_attributes(self.graph, "fitness_cv").values())
+        print(fitness)
+        print(fitness_cv)
+        vmin, vmax = min(min(fitness), min(self._ep_fitness_cv)), max(max(fitness), max(self._ep_fitness_cv))
         pos = nx.drawing.nx_agraph.graphviz_layout(self.graph, prog="neato")
-        nx.draw_networkx_nodes(self.graph, pos=pos, linewidths=0,
-            node_color=list(nx.get_node_attributes(self.graph, "fitness").values()),
-            cmap="coolwarm_r"
+        nx.draw_networkx_nodes(self.graph, pos=pos, 
+            node_size=500,
+            node_color=fitness_cv,
+            cmap="coolwarm_r", vmin=vmin, vmax=vmax
         )
-        edge_collection = nx.draw_networkx_edges(self.graph, pos=pos, 
+        nx.draw_networkx_nodes(self.graph, pos=pos, 
+            node_size=250,
+            node_color=fitness,
+            cmap="coolwarm_r", vmin=vmin, vmax=vmax,
+            linewidths=1, edgecolors="w"
+
+        )
+        edge_collection = nx.draw_networkx_edges(self.graph, pos=pos, node_size=500,
             connectionstyle="arc3,rad=0.1",
         )
         weights = list(nx.get_edge_attributes(self.graph, "weight").values())
