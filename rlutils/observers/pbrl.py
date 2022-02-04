@@ -74,19 +74,20 @@ class PbrlObserver:
         """
         return np.hstack([self.features[f](transitions).reshape(-1,1) for f in self.feature_names])
 
-    def phi(self, features):
+    def phi(self, transitions):
         """
         Map an array of features to a vector of component indices.
         """
         # if len(transitions.shape) == 1: transitions = transitions.reshape(1,-1) # Handle single.
-        return [self.tree.leaves.index(next(iter(self.tree.propagate([None,None]+list(f), mode="max")))) for f in features]
+        return [self.tree.leaves.index(next(iter(self.tree.propagate([None,None]+list(f), mode="max")))) 
+                for f in self.feature_map(transitions)]
 
     def n(self, transitions):
         """
         Map an array of transitions to a vector of component counts.
         """
         n = np.zeros(self.m, dtype=int)
-        for x in self.phi(self.feature_map(transitions)): n[x] += 1
+        for x in self.phi(transitions): n[x] += 1
         return n
 
     def reward(self, states, actions, next_states):
@@ -100,7 +101,7 @@ class PbrlObserver:
             next_states.cpu().numpy()
             ])
         if self.P["reward_source"] == "tree":
-            x = self.phi(self.feature_map(transitions)) 
+            x = self.phi(transitions)
             # TODO: Implement RUNE.
             if "rune_coef" in self.P: return self.r[x] + self.P["rune_coef"] * np.sqrt(self.var[x])
             else: return self.r[x]
@@ -517,8 +518,6 @@ class PbrlObserver:
         plt.figure(figsize=(12, 12))
         fitness = list(nx.get_node_attributes(self.graph, "fitness").values())
         fitness_cv = list(nx.get_node_attributes(self.graph, "fitness_cv").values())
-        print(fitness)
-        print(fitness_cv)
         vmin, vmax = min(min(fitness), min(self._ep_fitness_cv)), max(max(fitness), max(self._ep_fitness_cv))
         pos = nx.drawing.nx_agraph.graphviz_layout(self.graph, prog="neato")
         nx.draw_networkx_nodes(self.graph, pos=pos, 
