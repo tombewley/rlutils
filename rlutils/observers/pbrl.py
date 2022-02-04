@@ -384,7 +384,7 @@ class PbrlObserver:
         if False: 
             self.plot_comparison_matrix()
             plt.savefig(f"{path}/matrix_{history_key}.png")
-        if True: 
+        if False: 
             self.plot_alignment()
             plt.savefig(f"{path}/alignment_{history_key}.png")
         if False: 
