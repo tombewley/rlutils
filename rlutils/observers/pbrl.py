@@ -439,6 +439,7 @@ class PbrlObserver:
             - Case V fitness, or
             - Ground truth fitness if an oracle is available    
         """
+        print("NOTE: plot_alignment() is expensive!")
         A, d, connected = construct_A_and_d(self.Pr, self.P["p_clip"])
         case_v = fitness_case_v(A, d)
         if vs == "case_v": 
@@ -553,9 +554,9 @@ def labelling_loss(A, d, N, r, var, p_clip):
     """
     Loss function l that this algorithm is ultimately trying to minimise.
     """
-    AN = np.matmul(A, N)
-    F_diff = np.matmul(AN, r)
-    F_std = np.sqrt(np.matmul(AN**2, var)) # Faster than actual matrix multiplication N A^T diag(var) A N^T.
+    N_diff = np.matmul(A, N)
+    F_diff = np.matmul(N_diff, r)
+    F_std = np.sqrt(np.matmul(N_diff**2, var)) # Faster than actual matrix multiplication N A^T diag(var) A N^T.
     F_std[np.logical_and(F_diff == 0, F_std == 0)] = 1 # Catch 0 / 0 error.
     with np.errstate(divide="ignore"): 
         d_pred = norm.ppf(np.clip(norm.cdf(F_diff / F_std), p_clip, 1-p_clip)) # Clip to prevent infinite values.
