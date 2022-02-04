@@ -32,8 +32,9 @@ class PbrlObserver:
             b = self.P["num_episodes_before_freeze"] / self.P["feedback_freq"]
             assert b % 1 == 0
             self._num_batches = int(b)
-            self._current_batch_num = 1
-            self._n_on_prev_feedback = 0
+            self._batch_num = 1
+            self._k = 0
+            self._n_on_prev_batch = 0
             self._do_save = "save_freq" in self.P and self.P["save_freq"] > 0
             self._do_logs = "log_freq" in self.P and self.P["log_freq"] > 0
         # Initialise empty tree.
@@ -160,10 +161,8 @@ class PbrlObserver:
             logs["reward_sum_oracle"] = sum(self.interface.oracle(self._current_ep))
         # Retain episodes for use in reward inference with a specified frequency.
         if self._do_observe and (ep+1) % self.P["observe_freq"] == 0: 
-            self.episodes.append(self._current_ep)
-            n = len(self.episodes)
+            self.episodes.append(self._current_ep); n = len(self.episodes)
             Pr_old = self.Pr; self.Pr = np.full((n, n), np.nan); self.Pr[:-1,:-1] = Pr_old
-        else: n = len(self.episodes)  
         if self._do_online:
             if (ep+1) % self.P["feedback_freq"] == 0 and (ep+1) <= self.P["num_episodes_before_freeze"]:    
                 # Gather a batch of feedback.
@@ -171,13 +170,13 @@ class PbrlObserver:
                 B = self._num_batches # Number of feedback batches.
                 f = self.P["feedback_freq"] / self.P["observe_freq"] # Number of episodes between feedback batches.
                 c = self.P["scheduling_coef"] # How strongly to apply scheduling.
-                b = self._current_batch_num # Current batch number.
+                b = self._batch_num # Current batch number.
                 k_max = int(round((K / B * (1 - c)) + (K * (f * (2*b - 1) - 1) / (B * (B*f - 1)) * c)))
-                self.get_feedback(k_max=k_max, ij_min=self._n_on_prev_feedback)
+                self.get_feedback(k_max=k_max, ij_min=self._n_on_prev_batch)
                 # Update reward function.
                 self.update(history_key=(ep+1))
-                self._current_batch_num += 1 
-                self._n_on_prev_feedback = n
+                self._batch_num += 1 
+                self._n_on_prev_batch = len(self.episodes)
             logs["feedback_count"] = self.feedback_count
             # Periodically save out and plot.
             if self._do_save and (ep+1) % self.P["save_freq"] == 0: self.save()
@@ -197,14 +196,15 @@ class PbrlObserver:
             for k in range(k_max):
                 if ij is None:
                     found, i, j, _ = self.select_i_j(w, ij_min=ij_min)
-                    if not found: print("=== All rated ==="); break
+                    if not found: print("=== Fully connected ==="); break
                 else: assert k_max == 1; i, j = ij # Force specified i, j.
                 y_ij = self.interface(i, j)
                 if y_ij == "esc": print("=== Feedback exited ==="); break
                 assert 0 <= y_ij <= 1
                 self.Pr[i, j] = y_ij
                 self.Pr[j, i] = 1 - y_ij
-                print(f"{k+1} / {k_max}: P({i} > {j}) = {y_ij}")
+                self._k += 1
+                print(f"{k+1} / {k_max} ({self._k} / {self.P['feedback_budget']}): P({i} > {j}) = {y_ij}")
 
     def select_i_j(self, w, ij_min=0):
         """
@@ -251,13 +251,15 @@ class PbrlObserver:
         """
         # Split into training and validation sets.
         Pr_train, Pr_val = train_val_split(self.Pr)
-        # Compute fitness estimates for episodes that are connected to the training set comparison graph.        
+                
         A, d, connected = construct_A_and_d(Pr_train, self.P["p_clip"])
-        print(f"Including {len(connected)} / {len(self.episodes)} episodes")
+        print(f"Connected episodes: {len(connected)} / {len(self.episodes)}")
+        if len(connected) == 0: print("=== None connected ==="); return
+
+        # Compute fitness estimates for episodes that are connected to the training set comparison graph.
         ep_fitness_cv = fitness_case_v(A, d)
 
         # Uniform temporal prior.
-        # NOTE: scaling by episode lengths (i.e. mean not sum) causes weird behaviour.
         ep_length = np.array([len(self.episodes[i]) for i in connected])
         reward_target = ep_fitness_cv
         
@@ -310,49 +312,51 @@ class PbrlObserver:
             if parent_num is None: continue # First entry of history_merge will have this.
             pruned_nums = self.tree.prune_to(self.tree._get_nodes()[parent_num])
             assert set(pruned_nums_prev) == set(pruned_nums)
-        
-        # Store updated result.
-        self.r, self.var = np.array(self.tree.gather(("mean","reward"))), np.array(self.tree.gather(("var","reward")))   
-        self.relabel_memory()    
         # history_split, history_merge = split_merge_cancel(history_split, history_merge)
         self.history[history_key] = {"split": history_split, "merge": history_merge, "m": self.m}
         print(self.tree.space)
         print(self.tree)
         print(hr.rules(self.tree, pred_dims="reward", sf=5))#, out_name="tree_func"))
                 
+        # Store updated result.
+        self.r, self.var = np.array(self.tree.gather(("mean","reward"))), np.array(self.tree.gather(("var","reward")))   
+        self.relabel_memory()  
+
+    def relabel_memory(self): pass  
+
     def save(self):
 
-        import sys
-        def get_size(obj, seen=None):
-            """Recursively finds size of objects"""
-            size = sys.getsizeof(obj)
-            if seen is None:
-                seen = set()
-            obj_id = id(obj)
-            if obj_id in seen:
-                return 0
-            # Important mark as seen *before* entering recursion to gracefully handle
-            # self-referential objects
-            seen.add(obj_id)
-            if isinstance(obj, dict):
-                size += sum([get_size(v, seen) for v in obj.values()])
-                size += sum([get_size(k, seen) for k in obj.keys()])
-            elif hasattr(obj, '__dict__'):
-                size += get_size(obj.__dict__, seen)
-            elif hasattr(obj, '__iter__') and not isinstance(obj, (str, bytes, bytearray)):
-                size += sum([get_size(i, seen) for i in obj])
-            return size
-        print("=================")
-        print(get_size(self))
-        print("=================")
-        s_sum = 0
-        for k,v in self.__dict__.items():
-            s = get_size(v)
-            print(k, s)
-            if k != "interface": s_sum += s
-        print("=================")
-        print(s_sum)
-        print("=================")
+        # import sys
+        # def get_size(obj, seen=None):
+        #     """Recursively finds size of objects"""
+        #     size = sys.getsizeof(obj)
+        #     if seen is None:
+        #         seen = set()
+        #     obj_id = id(obj)
+        #     if obj_id in seen:
+        #         return 0
+        #     # Important mark as seen *before* entering recursion to gracefully handle
+        #     # self-referential objects
+        #     seen.add(obj_id)
+        #     if isinstance(obj, dict):
+        #         size += sum([get_size(v, seen) for v in obj.values()])
+        #         size += sum([get_size(k, seen) for k in obj.keys()])
+        #     elif hasattr(obj, '__dict__'):
+        #         size += get_size(obj.__dict__, seen)
+        #     elif hasattr(obj, '__iter__') and not isinstance(obj, (str, bytes, bytearray)):
+        #         size += sum([get_size(i, seen) for i in obj])
+        #     return size
+        # print("=================")
+        # print(get_size(self))
+        # print("=================")
+        # s_sum = 0
+        # for k,v in self.__dict__.items():
+        #     s = get_size(v)
+        #     print(k, s)
+        #     if k != "interface": s_sum += s
+        # print("=================")
+        # print(s_sum)
+        # print("=================")
 
         path = f"run_logs/{self.run_names[-1]}"
         if not os.path.exists(path): os.makedirs(path)
@@ -391,7 +395,7 @@ class PbrlObserver:
                     plt.savefig(f"{path}/{vis_dims}_{history_key}.png")
         if False: # Psi_matrix
             assert self.P["sampling"]["weight"] == "ucb", "Psi matrix only implemented for UCB"
-            _, _, _, p = self.select_i_j(self.F_ucb_for_pairs(self.episodes), ij_min=self._n_on_prev_feedback)
+            _, _, _, p = self.select_i_j(self.F_ucb_for_pairs(self.episodes), ij_min=self._n_on_prev_batch)
             plt.figure()
             plt.imshow(p, interpolation="none")
             plt.savefig(f"{path}/psi_matrix_{history_key}.png")

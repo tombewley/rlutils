@@ -107,7 +107,7 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers={}, run_id=
 
             # Periodic save-outs of checkpoints (always save after final episode).
             if do_checkpoints and ((ep+1) == P["num_episodes"] or (ep+1) % P["checkpoint_freq"] == 0):
-                agent.save(f"{save_dir}/ep{ep+1}") 
+                agent.save(f"{save_dir}/{ep+1}") 
 
         # Clean up.
         if renderer: renderer.close()
