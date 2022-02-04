@@ -21,17 +21,21 @@ class PbrlObserver:
         elif type(features) == list: self.feature_names, self.features = features, None
         self.run_names = run_names if run_names is not None else [] # Order crucial to match with episodes.
         self.load_episodes(episodes if episodes is not None else [])
-        if self.P["interface"] is not None: 
-            self.interface = self.P["interface"][0](self, *self.P["interface"][1:])
-        if "feedback_budget" in self.P and self.P["feedback_budget"] > 0:
-            assert self.P["feedback_freq"] % self.P["observe_freq"] == 0    
+        self.interface = self.P["interface"][0](self, *self.P["interface"][1:]) if "interface" in self.P else None
+        self._do_observe = "observe_freq" in self.P and self.P["observe_freq"] > 0
+        self._do_online = "feedback_budget" in self.P and self.P["feedback_budget"] > 0
+        if self._do_online:
             # TODO: More assertions here
-            # Compute batch size for online preference elicitation.
+            assert self.interface is not None
+            assert self._do_observe
+            assert self.P["feedback_freq"] % self.P["observe_freq"] == 0    
             b = self.P["num_episodes_before_freeze"] / self.P["feedback_freq"]
             assert b % 1 == 0
             self._num_batches = int(b)
             self._current_batch_num = 1
             self._n_on_prev_feedback = 0
+            self._do_save = "save_freq" in self.P and self.P["save_freq"] > 0
+            self._do_logs = "log_freq" in self.P and self.P["log_freq"] > 0
         # Initialise empty tree.
         space = hr.Space(dim_names=["ep", "reward"] + self.feature_names)
         root = hr.node.Node(space, sorted_indices=space.all_sorted_indices) 
@@ -51,7 +55,7 @@ class PbrlObserver:
         NOTE: A little inelegant.
         """
         assert len(agent.memory) == 0, "Agent must be at the start of learning."
-        agent.P["reward"] = self.reward
+        # agent.P["reward"] = self.reward
         agent.memory.__init__(agent.memory.capacity, reward=self.reward, relabel_mode="eager")
         if not agent.memory.lazy_reward: self.relabel_memory = agent.memory.relabel
 
@@ -88,6 +92,7 @@ class PbrlObserver:
         """
         Reward function, defined over individual transitions. Expects a batch of transitions as three PyTorch tensors.
         """
+        assert self.P["reward_source"] != "extrinsic", "This shouldn't have been called. Unwanted call to pbrl.link(agent)?"
         transitions = np.hstack([ # NOTE: PyTorch -> NumPy is quite slow.
             states.cpu().numpy(), 
             [self.P["discrete_action_map"][a] for a in actions] if "discrete_action_map" in self.P else actions.cpu().numpy(), 
@@ -100,7 +105,6 @@ class PbrlObserver:
             else: return self.r[x]
         elif self.P["reward_source"] == "oracle":
             return self.interface.oracle(transitions)
-        elif self.P["reward_source"] == "extrinsic": raise Exception("This shouldn't have been called. Unwanted call of pbrl.link(agent)?")
 
     def F(self, trajectory_i, trajectory_j=None):
         """
@@ -152,15 +156,15 @@ class PbrlObserver:
         # Log reward sums.
         if self.P["reward_source"] == "tree": 
             logs["reward_sum_tree"] = self.F(self._current_ep)[0] # NOTE: This overwrites that logged by the environment.
-        if self.P["interface"] is not None and self.interface.oracle is not None: 
+        if self.interface is not None and self.interface.oracle is not None: 
             logs["reward_sum_oracle"] = sum(self.interface.oracle(self._current_ep))
         # Retain episodes for use in reward inference with a specified frequency.
-        if "observe_freq" in self.P and self.P["observe_freq"] > 0 and (ep+1) % self.P["observe_freq"] == 0: 
+        if self._do_observe and (ep+1) % self.P["observe_freq"] == 0: 
             self.episodes.append(self._current_ep)
             n = len(self.episodes)
             Pr_old = self.Pr; self.Pr = np.full((n, n), np.nan); self.Pr[:-1,:-1] = Pr_old
         else: n = len(self.episodes)  
-        if "feedback_budget" in self.P and self.P["feedback_budget"] > 0:
+        if self._do_online:
             if (ep+1) % self.P["feedback_freq"] == 0 and (ep+1) <= self.P["num_episodes_before_freeze"]:    
                 # Gather a batch of feedback.
                 K = self.P["feedback_budget"] # Total feedback budget.
@@ -168,16 +172,16 @@ class PbrlObserver:
                 f = self.P["feedback_freq"] / self.P["observe_freq"] # Number of episodes between feedback batches.
                 c = self.P["scheduling_coef"] # How strongly to apply scheduling.
                 b = self._current_batch_num # Current batch number.
-                k_max = (K / B * (1 - c)) + (K * (f * (2*b - 1) - 1) / (B * (B*f - 1)) * c)
-                self.get_feedback(k_max=round(k_max), ij_min=self._n_on_prev_feedback)
+                k_max = int(round((K / B * (1 - c)) + (K * (f * (2*b - 1) - 1) / (B * (B*f - 1)) * c)))
+                self.get_feedback(k_max=k_max, ij_min=self._n_on_prev_feedback)
                 # Update reward function.
                 self.update(history_key=(ep+1))
                 self._current_batch_num += 1 
                 self._n_on_prev_feedback = n
             logs["feedback_count"] = self.feedback_count
             # Periodically save out and plot.
-            if (ep+1) % self.P["save_freq"] == 0: self.save()
-            if (ep+1) % self.P["log_freq"] == 0: self.make_and_save_logs(history_key=(ep+1))   
+            if self._do_save and (ep+1) % self.P["save_freq"] == 0: self.save()
+            if self._do_logs and (ep+1) % self.P["log_freq"] == 0: self.make_and_save_logs(history_key=(ep+1))   
         self._current_ep = []
         return logs
 
@@ -349,7 +353,6 @@ class PbrlObserver:
         print("=================")
         print(s_sum)
         print("=================")
-        raise Exception()
 
         path = f"run_logs/{self.run_names[-1]}"
         if not os.path.exists(path): os.makedirs(path)

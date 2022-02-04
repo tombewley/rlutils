@@ -26,8 +26,6 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers={}, run_id=
     do_wandb = "wandb_monitor" in P and P["wandb_monitor"]
     do_render = "render_freq" in P and P["render_freq"] > 0
     do_checkpoints = "checkpoint_freq" in P and P["checkpoint_freq"] > 0    
-    if do_checkpoints: import os; os.makedirs(save_dir, exist_ok=True) # Create directory for saving.
-    # do_reward_decomposition = "reward_components" in agent.P and agent.P["reward_components"] is not None
 
     if do_wandb: 
         # Initialise Weights & Biases monitoring.
@@ -52,15 +50,16 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers={}, run_id=
             # try: wandb.watch(agent.pi)
             # except: pass
     else:
-        import time; run_id, run_name = None, time.strftime("%Y-%m-%d_%H-%M-%S")
+        import time; run_name = time.strftime("%Y-%m-%d_%H-%M-%S")
 
-    # Tell observers what the run name is.
+    # Create directory for saving and tell observers what the run name is.
+    if do_checkpoints: import os; save_dir += f"/{run_name}"; os.makedirs(save_dir, exist_ok=True) 
     for o in observers.values(): o.run_names.append(run_name) 
 
     # Add wrappers to environment.
     if "episode_time_limit" in P and P["episode_time_limit"]: # Time limit.
         agent.env = wrappers.TimeLimit(agent.env, P["episode_time_limit"])
-    if "video_freq" in P and P["video_freq"] > 0: # Video recording. NOTE: Must put this last.
+    if "video_freq" in P and P["video_freq"] > 0: # Video recording. NOTE: This must be the outermost wrapper.
         agent.env = wrappers.Monitor(agent.env, f"./video/{run_name}", video_callable=lambda ep: ep % P["video_freq"] == 0, force=True)
 
     # Stable Baselines uses its own training and saving procedures.
@@ -70,7 +69,6 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers={}, run_id=
         state = agent.env.reset()
         for ep in tqdm(range(P["num_episodes"])):
             render_this_ep = do_render and (ep+1) % P["render_freq"] == 0
-            checkpoint_this_ep = do_checkpoints and ((ep+1) == P["num_episodes"] or (ep+1) % P["checkpoint_freq"] == 0)
             
             # Get state in PyTorch format expected by agent.
             state_torch = renderer.get(first=True) if renderer else torch.from_numpy(state).float().to(agent.device).unsqueeze(0)
@@ -87,7 +85,6 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers={}, run_id=
                 
                 # Perform some agent-specific operations on each timestep if training.
                 if train: agent.per_timestep(state_torch, action, reward, next_state_torch, done)
-                                # info["reward_components"] if do_reward_decomposition else reward, 
 
                 # Send all information relating to the current timestep to to the observers.
                 for o in observers.values(): o.per_timestep(ep, t, state, action, next_state, reward, done, info, extra)
@@ -97,7 +94,7 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers={}, run_id=
 
                 state = next_state; state_torch = next_state_torch; t += 1
             
-            state = agent.env.reset() # NOTE: PbRL observer requires env.reset() here due to video save behaviour.
+            state = agent.env.reset() # PbrlObserver requires env.reset() here due to video save behaviour.
                     
             # Perform some agent- and observer-specific operations on each episode, which may create logs.
             logs = {"reward_sum": reward_sum}
@@ -108,8 +105,9 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers={}, run_id=
             # Send logs to Weights & Biases if applicable.
             if do_wandb: wandb.log(logs)
 
-            # Periodic save-outs of checkpoints.
-            if checkpoint_this_ep: agent.save(f"{save_dir}/{run_name}_ep{ep+1}") 
+            # Periodic save-outs of checkpoints (always save after final episode).
+            if do_checkpoints and ((ep+1) == P["num_episodes"] or (ep+1) % P["checkpoint_freq"] == 0):
+                agent.save(f"{save_dir}/ep{ep+1}") 
 
         # Clean up.
         if renderer: renderer.close()
