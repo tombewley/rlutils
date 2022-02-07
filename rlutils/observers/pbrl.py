@@ -180,7 +180,7 @@ class PbrlObserver:
                 self._n_on_prev_batch = len(self.episodes)
             logs["feedback_count"] = self.feedback_count
             # Periodically save out and plot.
-            if self._do_save and (ep+1) % self.P["save_freq"] == 0: self.save()
+            if self._do_save and (ep+1) % self.P["save_freq"] == 0: self.save(history_key=(ep+1))
             if self._do_logs and (ep+1) % self.P["log_freq"] == 0: self.make_and_save_logs(history_key=(ep+1))   
         self._current_ep = []
         return logs
@@ -326,45 +326,15 @@ class PbrlObserver:
 
     def relabel_memory(self): pass  
 
-    def save(self):
-
-        # import sys
-        # def get_size(obj, seen=None):
-        #     """Recursively finds size of objects"""
-        #     size = sys.getsizeof(obj)
-        #     if seen is None:
-        #         seen = set()
-        #     obj_id = id(obj)
-        #     if obj_id in seen:
-        #         return 0
-        #     # Important mark as seen *before* entering recursion to gracefully handle
-        #     # self-referential objects
-        #     seen.add(obj_id)
-        #     if isinstance(obj, dict):
-        #         size += sum([get_size(v, seen) for v in obj.values()])
-        #         size += sum([get_size(k, seen) for k in obj.keys()])
-        #     elif hasattr(obj, '__dict__'):
-        #         size += get_size(obj.__dict__, seen)
-        #     elif hasattr(obj, '__iter__') and not isinstance(obj, (str, bytes, bytearray)):
-        #         size += sum([get_size(i, seen) for i in obj])
-        #     return size
-        # print("=================")
-        # print(get_size(self))
-        # print("=================")
-        # s_sum = 0
-        # for k,v in self.__dict__.items():
-        #     s = get_size(v)
-        #     print(k, s)
-        #     if k != "interface": s_sum += s
-        # print("=================")
-        # print(s_sum)
-        # print("=================")
-
+    def save(self, history_key):
         path = f"run_logs/{self.run_names[-1]}"
         if not os.path.exists(path): os.makedirs(path)
-        f = self.features; self.features = None # NOTE: Lambda functions can't be Pickled
-        dump(self, f"{path}/checkpoint_{len(self.episodes)}.joblib")
-        self.features = f
+        # f = self.features; self.features = None # NOTE: Lambda functions can't be Pickled
+        dump({"params": self.P,
+              "Pr": self.Pr,
+              "tree": self.tree
+        }, f"{path}/checkpoint_{history_key}.joblib")
+        # self.features = f
 
 # ==============================================================================
 # VISUALISATION
