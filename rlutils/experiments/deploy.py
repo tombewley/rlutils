@@ -57,7 +57,7 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers={}, run_id=
     for o in observers.values(): o.run_names.append(run_name) 
 
     # Add wrappers to environment.
-    if "episode_time_limit" in P and P["episode_time_limit"]: # Time limit.
+    if "episode_time_limit" in P: # Time limit.
         agent.env = wrappers.TimeLimit(agent.env, P["episode_time_limit"])
     if "video_freq" in P and P["video_freq"] > 0: # Video recording. NOTE: This must be the outermost wrapper.
         agent.env = wrappers.Monitor(agent.env, f"./video/{run_name}", video_callable=lambda ep: ep % P["video_freq"] == 0, force=True)
@@ -69,6 +69,7 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers={}, run_id=
         state = agent.env.reset()
         for ep in tqdm(range(P["num_episodes"])):
             render_this_ep = do_render and (ep+1) % P["render_freq"] == 0
+            if render_this_ep: agent.env.render()
             
             # Get state in PyTorch format expected by agent.
             state_torch = renderer.get(first=True) if renderer else torch.from_numpy(state).float().to(agent.device).unsqueeze(0)
