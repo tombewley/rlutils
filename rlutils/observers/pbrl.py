@@ -515,6 +515,14 @@ class PbrlObserver:
 # ==============================================================================
 # UTILITIES
 
+def from_dict(d):
+    """
+    Make an instance of PbRLObserver from a dictionary of minimal information: {params, Pr, tree}.
+    """
+    pbrl = PbrlObserver(d["params"], d["features"])
+    pbrl.Pr, pbrl.tree = d["Pr"], d["tree"]
+    return pbrl
+
 def construct_A_and_d(Pr, p_clip):
     pairs, y, connected = [], [], set()
     for i, j in np.argwhere(np.logical_not(np.isnan(Pr))):
