@@ -6,7 +6,7 @@ np.set_printoptions(precision=3, suppress=True, edgeitems=30, linewidth=100000)
 from scipy.stats import norm
 import networkx as nx
 from tqdm import tqdm
-from joblib import dump
+from joblib import load as load_jl, dump
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
 
@@ -72,6 +72,7 @@ class PbrlObserver:
         """
         Map an array of transitions to an array of features.
         """
+        if self.features is None: return transitions
         return np.hstack([self.features[f](transitions).reshape(-1,1) for f in self.feature_names])
 
     def phi(self, transitions):
@@ -321,8 +322,11 @@ class PbrlObserver:
         print(hr.rules(self.tree, pred_dims="reward", sf=5))#, out_name="tree_func"))
                 
         # Store updated result.
-        self.r, self.var = np.array(self.tree.gather(("mean","reward"))), np.array(self.tree.gather(("var","reward")))   
-        self.relabel_memory()  
+        self.compute_r_and_var(); self.relabel_memory()  
+
+    def compute_r_and_var(self):
+        self.r = np.array(self.tree.gather(("mean","reward"))) 
+        self.var = np.array(self.tree.gather(("var","reward")))   
 
     def relabel_memory(self): pass  
 
@@ -333,7 +337,7 @@ class PbrlObserver:
         dump({"params": self.P,
               "Pr": self.Pr,
               "tree": self.tree
-        }, f"{path}/checkpoint_{history_key}.joblib")
+        }, f"{path}/{history_key}.pbrl")
         # self.features = f
 
 # ==============================================================================
@@ -473,22 +477,22 @@ class PbrlObserver:
             hr.show_samples(self.tree.root, vis_dims=vis_dims, colour_dim="reward", ax=ax1, cmap_lims=cmap_lims, cbar=False)
         return ax1, ax2
 
-    def plot_comparison_graph(self):
+    def plot_comparison_graph(self, figsize=(12, 12)):
         # Graph creation.
         self.graph = nx.DiGraph()
         n = len(self.episodes)
         self.graph.add_nodes_from(range(n), fitness=0)
         for i in range(n): 
-            self.graph.nodes[i]["fitness"] = self.F(self.episodes[i])[0]
-            self.graph.nodes[i]["fitness_cv"] = None
+            self.graph.nodes[i]["fitness"] = np.nan if self.episodes[i] is None else self.F(self.episodes[i])[0]
+            self.graph.nodes[i]["fitness_cv"] = np.nan
         for i, f in zip(self._connected, self._ep_fitness_cv): 
             self.graph.nodes[i]["fitness_cv"] = f * len(self.episodes[i])
         self.graph.add_weighted_edges_from([(j, i, self.Pr[i,j]) for i in range(n) for j in range(n) if not np.isnan(self.Pr[i,j])])
         # Graph plotting.
-        plt.figure(figsize=(12, 12))
+        plt.figure(figsize=figsize)
         fitness = list(nx.get_node_attributes(self.graph, "fitness").values())
         fitness_cv = list(nx.get_node_attributes(self.graph, "fitness_cv").values())
-        vmin, vmax = min(min(fitness), min(self._ep_fitness_cv)), max(max(fitness), max(self._ep_fitness_cv))
+        vmin, vmax = min(np.nanmin(fitness), min(self._ep_fitness_cv)), max(np.nanmax(fitness), max(self._ep_fitness_cv))
         pos = nx.drawing.nx_agraph.graphviz_layout(self.graph, prog="neato")
         nx.draw_networkx_nodes(self.graph, pos=pos, 
             node_size=500,
@@ -515,15 +519,36 @@ class PbrlObserver:
 # ==============================================================================
 # UTILITIES
 
-def from_dict(d):
+def load(fname):
     """
-    Make an instance of PbRLObserver from a dictionary of minimal information: {params, Pr, tree}.
+    Make an instance of PbRLObserver from the information stored by the .save() method.
+    NOTE: pbrl.episodes contains the featurised representation of each transition.
     """
-    pbrl = PbrlObserver(d["params"], d["features"])
-    pbrl.Pr, pbrl.tree = d["Pr"], d["tree"]
+    dict = load_jl(fname)
+    pbrl = PbrlObserver(dict["params"], features=dict["tree"].space.dim_names[2:])
+    pbrl.Pr, pbrl.tree = dict["Pr"], dict["tree"]
+    pbrl.compute_r_and_var()
+    A, d, pbrl._connected = construct_A_and_d(pbrl.Pr, pbrl.P["p_clip"])
+    pbrl._ep_fitness_cv = fitness_case_v(A, d)
+    pbrl.episodes = [None for _ in range(pbrl.Pr.shape[0])]
+    for i, ep in zip(pbrl._connected, hr.group_along_dim(dict["tree"].space, "ep")):
+        assert i == ep[0,0], "pbrl._connected does not match episodes in tree."
+        pbrl.episodes[i] = ep[:,2:] # Remove ep and reward columns
+    print(f"Loaded {fname}")
     return pbrl
 
+def train_val_split(Pr):
+    """
+    Split rating matrix into training and validation sets, 
+    while keeping comparison graph connected for training set.
+    """
+    # pairs = [(i, j) for i, j in np.argwhere(np.triu(np.invert(np.isnan(Pr))))]
+    return Pr, None
+
 def construct_A_and_d(Pr, p_clip):
+    """
+    Construct A and d matrices required by Morrissey-Gulliksen method.
+    """
     pairs, y, connected = [], [], set()
     for i, j in np.argwhere(np.logical_not(np.isnan(Pr))):
         if j < i: pairs.append([i, j]); y.append(Pr[i, j]); connected = connected | {i, j}
@@ -534,13 +559,6 @@ def construct_A_and_d(Pr, p_clip):
     # Target vector.
     d = norm.ppf(np.clip(y, p_clip, 1 - p_clip)) 
     return A, d, connected
-
-def train_val_split(Pr):
-    """
-    Split rating matrix into training and validation sets, while keeping comparison graph connected for training set.
-    """
-    # pairs = [(i, j) for i, j in np.argwhere(np.triu(np.invert(np.isnan(Pr))))]
-    return Pr, None
 
 def fitness_case_v(A, d):
     """
