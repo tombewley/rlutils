@@ -16,8 +16,8 @@ class Observer:
     """
     Class for collecting observational data from an agent and its environment during deployment.
     """
-    def __init__(self, state_dims, action_dims, do_next_state=False, do_info=False, do_extra=False):
-        self.do_next_state, self.do_info, self.do_extra = do_next_state, do_info, do_extra
+    def __init__(self, P, state_dims, action_dims, do_next_state=False, do_info=False, do_extra=False):
+        self.P, self.do_next_state, self.do_info, self.do_extra = P, do_next_state, do_info, do_extra
         # If state_dims or action_dims are integers, use default names.
         if type(state_dims) is int:  state_dims = [f"s_{i}" for i in range(state_dims)] if state_dims > 1 else ["s"]
         if type(action_dims) is int: action_dims = [f"a_{i}" for i in range(action_dims)] if action_dims > 1 else ["a"]
