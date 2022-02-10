@@ -40,12 +40,13 @@ class SacAgent(Agent):
         self.memory = ReplayMemory(self.P["replay_capacity"])
         # Tracking variables.   
         self.total_t = 0 # Used for update_freq.
-        self.ep_losses = []  
+        self.ep_log_probs, self.ep_losses = [], []  
     
     def act(self, state, explore=True, do_extra=False):
         """Probabilistic action selection from Gaussian parameterised by output of self.pi."""
         with torch.no_grad():
             action, log_prob = squashed_gaussian(self.pi(state))
+            self.ep_log_probs.append(log_prob)
             return action.cpu().numpy()[0], {}
 
     def update_on_batch(self, diayn_batch=None):
@@ -88,7 +89,9 @@ class SacAgent(Agent):
 
     def per_episode(self):
         """Operations to perform on each episode end during training."""
+        mean_log_prob = np.mean(self.ep_log_probs)
+        del self.ep_log_probs[:]
         if self.ep_losses: mean_policy_loss, mean_value_loss = np.nanmean(self.ep_losses, axis=0)
         else: mean_policy_loss, mean_value_loss = 0., 0.
         del self.ep_losses[:]
-        return {"policy_loss": mean_policy_loss, "value_loss": mean_value_loss}
+        return {"policy_loss": mean_policy_loss, "value_loss": mean_value_loss, "mean_log_prob": mean_log_prob}
