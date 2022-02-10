@@ -481,10 +481,9 @@ class PbrlObserver:
         # Graph creation.
         self.graph = nx.DiGraph()
         n = len(self.episodes)
-        self.graph.add_nodes_from(range(n), fitness=0)
+        self.graph.add_nodes_from(range(n), fitness=np.nan, fitness_cv=np.nan)
         for i in range(n): 
-            self.graph.nodes[i]["fitness"] = np.nan if self.episodes[i] is None else self.F(self.episodes[i])[0]
-            self.graph.nodes[i]["fitness_cv"] = np.nan
+            if self.episodes[i] is not None: self.graph.nodes[i]["fitness"] = self.F(self.episodes[i])[0]
         for i, f in zip(self._connected, self._ep_fitness_cv): 
             self.graph.nodes[i]["fitness_cv"] = f * len(self.episodes[i])
         self.graph.add_weighted_edges_from([(j, i, self.Pr[i,j]) for i in range(n) for j in range(n) if not np.isnan(self.Pr[i,j])])
@@ -492,7 +491,11 @@ class PbrlObserver:
         plt.figure(figsize=figsize)
         fitness = list(nx.get_node_attributes(self.graph, "fitness").values())
         fitness_cv = list(nx.get_node_attributes(self.graph, "fitness_cv").values())
-        vmin, vmax = min(np.nanmin(fitness), min(self._ep_fitness_cv)), max(np.nanmax(fitness), max(self._ep_fitness_cv))
+
+    
+
+
+        vmin, vmax = min(np.nanmin(fitness), np.nanmin(fitness_cv)), max(np.nanmax(fitness), np.nanmax(fitness_cv))
         pos = nx.drawing.nx_agraph.graphviz_layout(self.graph, prog="neato")
         nx.draw_networkx_nodes(self.graph, pos=pos, 
             node_size=500,
@@ -504,11 +507,8 @@ class PbrlObserver:
             node_color=fitness,
             cmap="coolwarm_r", vmin=vmin, vmax=vmax,
             linewidths=1, edgecolors="w"
-
         )
-        edge_collection = nx.draw_networkx_edges(self.graph, pos=pos, node_size=500,
-            connectionstyle="arc3,rad=0.1",
-        )
+        edge_collection = nx.draw_networkx_edges(self.graph, pos=pos, node_size=500, connectionstyle="arc3,rad=0.1")
         weights = list(nx.get_edge_attributes(self.graph, "weight").values())
         for i, e in enumerate(edge_collection): e.set_alpha(weights[i])
         nx.draw_networkx_labels(self.graph, pos=pos)
