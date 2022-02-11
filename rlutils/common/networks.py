@@ -83,6 +83,25 @@ class Normalise(nn.Module):
 
 
 # ===================================================================
+# MULTI-HEADED NETWORK
+
+
+# class MultiHeadedNetwork(nn.Module):
+#     def __init__(self, common=None, heads=None, preset=None, input_shape=None, output_size=None):
+#         super(MultiHeadedNetwork, self).__init__() 
+#         if common is None: 
+#             assert preset is not None, "Must specify either layers or preset."
+#             assert input_shape is not None and output_size is not None, "Must specify input_shape and output_size."
+#             common, heads = multi_headed_presets(preset, input_shape, output_size)
+#         self.common = nn.Sequential(*common)
+#         self.heads = nn.ModuleList([nn.Sequential(*head) for head in heads])
+
+#     def forward(self, x): 
+#         x = self.common(x)
+#         return tuple(head(x) for head in self.heads)
+
+
+# ===================================================================
 # TREE NETWORK
 
 
@@ -198,25 +217,6 @@ class Output:
         tensor = torch.cat([Ps_l, Ps_r], dim=2)
         assert torch.isclose(tensor.sum(axis=2), torch.tensor(1.)).all()
         return tensor
-
-
-# ===================================================================
-# MULTI-HEADED NETWORK
-
-
-# class MultiHeadedNetwork(nn.Module):
-#     def __init__(self, common=None, heads=None, preset=None, input_shape=None, output_size=None):
-#         super(MultiHeadedNetwork, self).__init__() 
-#         if common is None: 
-#             assert preset is not None, "Must specify either layers or preset."
-#             assert input_shape is not None and output_size is not None, "Must specify input_shape and output_size."
-#             common, heads = multi_headed_presets(preset, input_shape, output_size)
-#         self.common = nn.Sequential(*common)
-#         self.heads = nn.ModuleList([nn.Sequential(*head) for head in heads])
-
-#     def forward(self, x): 
-#         x = self.common(x)
-#         return tuple(head(x) for head in self.heads)
 
 
 # ===================================================================
