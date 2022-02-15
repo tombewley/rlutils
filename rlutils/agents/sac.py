@@ -46,7 +46,7 @@ class SacAgent(Agent):
         """Probabilistic action selection from Gaussian parameterised by output of self.pi."""
         with torch.no_grad():
             action, log_prob = squashed_gaussian(self.pi(state))
-            self.ep_log_probs.append(log_prob)
+            self.ep_log_probs.append(log_prob.cpu().numpy()[0])
             return action.cpu().numpy()[0], {}
 
     def update_on_batch(self, diayn_batch=None):
