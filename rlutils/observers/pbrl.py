@@ -672,11 +672,11 @@ class OracleInterface(Interface):
     "B-Pref: Benchmarking Preference-Based Reinforcement Learning." 
     Neural Information Processing Systems (NeurIPS) (2021).
 
-    (1) Myopic/recency bias with discount factor gamma
+    (1) "Myopic" recency bias with discount factor gamma
     (2) Query skipping if max(ret_i, ret_j) is below d_skip
         - NOTE: This reduces the effective feedback budget
     (3) Gaussian noise with standard deviation sigma 
-        - Aanalogous to beta in Bradley-Terry model
+        - Analogous to beta in Bradley-Terry model
     (4) Random flipping of P_i with probability epsilon
     (5) Equal preference expression if abs(P_i - 0.5) is below p_equal
 
