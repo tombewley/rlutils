@@ -32,7 +32,7 @@ class PbrlObserver:
             b = self.P["num_episodes_before_freeze"] / self.P["feedback_freq"]
             assert b % 1 == 0
             self._num_batches = int(b)
-            self._batch_num = 1
+            self._batch_num = 0
             self._k = 0
             self._n_on_prev_batch = 0
             self._do_save = "save_freq" in self.P and self.P["save_freq"] > 0
@@ -167,15 +167,22 @@ class PbrlObserver:
             Pr_old = self.Pr; self.Pr = np.full((n, n), np.nan); self.Pr[:-1,:-1] = Pr_old
         if self._do_online:
             if (ep+1) % self.P["feedback_freq"] == 0 and (ep+1) <= self.P["num_episodes_before_freeze"]:    
-                # Gather a batch of feedback.
-                K = self.P["feedback_budget"] # Total feedback budget.
-                B = self._num_batches # Number of feedback batches.
-                f = self.P["feedback_freq"] / self.P["observe_freq"] # Number of episodes between feedback batches.
-                c = self.P["scheduling_coef"] # How strongly to apply scheduling.
-                b = self._batch_num # Current batch number.
-                k_max = int(round((K / B * (1 - c)) + (K * (f * (2*b - 1) - 1) / (B * (B*f - 1)) * c)))
-                self.get_feedback(k_max=k_max, ij_min=self._n_on_prev_batch)
-                # Update reward function.
+                
+                # Calculate batch size.
+                # K = self.P["feedback_budget"] 
+                # B = self._num_batches 
+                # f = self.P["feedback_freq"] / self.P["observe_freq"] # Number of episodes between feedback batches.
+                # c = self.P["scheduling_coef"] 
+                # b = self._batch_num # Current batch number.
+                # batch_size = int(round((K / B * (1 - c)) + (K * (f * (2*(b+1) - 1) - 1) / (B * (B*f - 1)) * c)))
+
+                assert self.P["scheduling_coef"] == 0
+                K = self.P["feedback_budget"] - self._k # Remaining budget
+                B = self._num_batches - self._batch_num # Remaining number of batches
+                batch_size = int(round(K / B))
+
+                # Gather feedback and reward function.
+                self.get_feedback(batch_size=batch_size, ij_min=self._n_on_prev_batch)
                 self.update(history_key=(ep+1))
                 self._batch_num += 1 
                 self._n_on_prev_batch = len(self.episodes)
@@ -186,7 +193,7 @@ class PbrlObserver:
         self._current_ep = []
         return logs
 
-    def get_feedback(self, ij=None, k_max=1, ij_min=0): 
+    def get_feedback(self, ij=None, batch_size=1, ij_min=0): 
         """
         TODO: Make sampler class in similar way to interface class and use __next__ method to loop through.
         """
@@ -195,11 +202,11 @@ class PbrlObserver:
             if self.P["sampling"]["weight"] == "ucb_r": w = -w # Invert.
         elif self.P["sampling"]["weight"] == "uniform": n = len(self.episodes); w = np.zeros((n, n))
         with self.interface:
-            for k in range(k_max):
+            for k in range(batch_size):
                 if ij is None:
                     found, i, j, _ = self.select_i_j(w, ij_min=ij_min)
                     if not found: print("=== Fully connected ==="); break
-                else: assert k_max == 1; i, j = ij # Force specified i, j.
+                else: assert batch_size == 1; i, j = ij # Force specified i, j.
                 y_ij = self.interface(i, j)
                 if y_ij == "esc": print("=== Feedback exited ==="); break
                 elif y_ij == "skip": print(f"({i}, {j}) skipped"); continue
@@ -207,7 +214,7 @@ class PbrlObserver:
                 self.Pr[i, j] = y_ij
                 self.Pr[j, i] = 1 - y_ij
                 self._k += 1
-                print(f"{k+1} / {k_max} ({self._k} / {self.P['feedback_budget']}): P({i} > {j}) = {y_ij}")
+                print(f"{k+1} / {batch_size} ({self._k} / {self.P['feedback_budget']}): P({i} > {j}) = {y_ij}")
 
     def select_i_j(self, w, ij_min=0):
         """
@@ -696,20 +703,19 @@ class OracleInterface(Interface):
     def __call__(self, i, j): 
         if type(self.oracle) == list:
             raise NotImplementedError("List-based oracle is deprecated")
-            diff = self.oracle[i] - self.oracle[j]
+            ret_i, ret_j = self.oracle[i], self.oracle[j]
         else:
             ret_i = self.myopic_sum(self.oracle(self.pbrl.episodes[i]))
             ret_j = self.myopic_sum(self.oracle(self.pbrl.episodes[j]))
-            if max(ret_i, ret_j) < self.d_skip: return "skip"
-            if ret_i == ret_j: P_i = 0.5
-            else:
-                with np.errstate(divide="ignore"): # Div/0 is okay here.
-                    P_i = norm.cdf((ret_i - ret_j) / self.sigma)
-            if np.random.rand() <= self.epsilon: P_i = 1 - P_i
-        if self.return_P_i: return P_i
+        if max(ret_i, ret_j) < self.d_skip:  return "skip"
+        diff = ret_i - ret_j
+        if self.sigma == 0: P_i = 0.5 if diff == 0 else 1. if diff > 0 else 0.
+        else:               P_i = norm.cdf(diff / self.sigma)
+        if np.random.rand() <= self.epsilon: P_i = 1. - P_i
+        if self.return_P_i:                  return P_i
         elif abs(P_i - 0.5) <= self.p_equal: return 0.5
-        elif np.random.rand() < P_i: return 1. 
-        else: return 0. 
+        elif np.random.rand() < P_i:         return 1. 
+        else:                                return 0. 
 
     def myopic_sum(self, rewards):
         if self.gamma == 1: return sum(rewards)
