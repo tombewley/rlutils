@@ -214,7 +214,8 @@ class PbrlObserver:
                 self.Pr[i, j] = y_ij
                 self.Pr[j, i] = 1 - y_ij
                 self._k += 1
-                print(f"{k+1} / {batch_size} ({self._k} / {self.P['feedback_budget']}): P({i} > {j}) = {y_ij}")
+                readout = f"{k+1} / {batch_size} ({self._k} / {self.P['feedback_budget']}): P({i} > {j}) = {y_ij}"
+                print(readout); self.interface.print("\n"+readout)
 
     def select_i_j(self, w, ij_min=0):
         """
@@ -632,6 +633,7 @@ class Interface():
     def __init__(self, pbrl): self.pbrl, self.oracle = pbrl, None
     def __enter__(self): pass
     def __exit__(self, exc_type, exc_value, traceback): pass
+    def print(self, _): pass
 
 class VideoInterface(Interface):
     def __init__(self, pbrl): 
