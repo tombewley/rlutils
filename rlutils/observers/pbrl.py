@@ -4,6 +4,7 @@ import os
 import numpy as np
 np.set_printoptions(precision=3, suppress=True, edgeitems=30, linewidth=100000)   
 from scipy.stats import norm
+from scipy.special import xlogy, xlog1py
 import networkx as nx
 from tqdm import tqdm
 from joblib import load as load_jl, dump
@@ -263,7 +264,7 @@ class PbrlObserver:
         # Split into training and validation sets.
         Pr_train, Pr_val = train_val_split(self.Pr)
                 
-        A, d, self._connected = construct_A_and_d(Pr_train, self.P["p_clip"])
+        A, d, y, self._connected = construct_A_and_d(Pr_train, self.P["p_clip"])
         print(f"Connected episodes: {len(self._connected)} / {len(self.episodes)}")
         if len(self._connected) == 0: print("=== None connected ==="); return
 
@@ -303,7 +304,7 @@ class PbrlObserver:
                 # Measure loss.
                 r, var, var_sum = self.tree.gather(("mean","reward"),("var","reward"),("var_sum","reward"))
                 history_merge.append([self.m, parent_num, pruned_nums,
-                    labelling_loss(A, d, N, r, var, self.P["p_clip"]), # True labelling loss.
+                    labelling_loss(A, d, y, N, r, var, self.P["p_clip"]), # True labelling loss.
                     sum(var_sum) / num_samples # Proxy loss: variance.
                     ])
                 if self.m <= self.P["m_stop_merge"]: break
@@ -314,7 +315,7 @@ class PbrlObserver:
                 assert pruned_nums[-1] == pruned_nums[0] + len(pruned_nums)-1
                 N[:,pruned_nums[0]] = N[:,pruned_nums].sum(axis=1)
                 N = np.delete(N, pruned_nums[1:], axis=1)
-                if False: assert (N == np.array([self.n(ep) for ep in self.episodes])).all() # Sense check.     
+                if False: assert (N == np.array([self.n(self.episodes[i]) for i in self._connected])).all() # Sense check.     
         
         # Now prune to minimum-loss size.
         # NOTE: Size regularisation applied here; use reversed list to ensure *last* occurrence returned.
@@ -537,7 +538,7 @@ def load(fname):
     pbrl = PbrlObserver(dict["params"], features=dict["tree"].space.dim_names[2:])
     pbrl.Pr, pbrl.tree = dict["Pr"], dict["tree"]
     pbrl.compute_r_and_var()
-    A, d, pbrl._connected = construct_A_and_d(pbrl.Pr, pbrl.P["p_clip"])
+    A, d, _, pbrl._connected = construct_A_and_d(pbrl.Pr, pbrl.P["p_clip"])
     pbrl._ep_fitness_cv = fitness_case_v(A, d)
     pbrl.episodes = [None for _ in range(pbrl.Pr.shape[0])]
     for i, ep in zip(pbrl._connected, hr.group_along_dim(dict["tree"].space, "ep")):
@@ -561,13 +562,13 @@ def construct_A_and_d(Pr, p_clip):
     pairs, y, connected = [], [], set()
     for i, j in np.argwhere(np.logical_not(np.isnan(Pr))):
         if j < i: pairs.append([i, j]); y.append(Pr[i, j]); connected = connected | {i, j}
-    connected = sorted(list(connected))
+    y = np.array(y); connected = sorted(list(connected))
     # Comparison matrix.
     A = np.zeros((len(pairs), len(connected)), dtype=int)
     for l, (i, j) in enumerate(pairs): A[l, [connected.index(i), connected.index(j)]] = [1, -1] 
     # Target vector.
     d = norm.ppf(np.clip(y, p_clip, 1 - p_clip)) 
-    return A, d, connected
+    return A, d, y, connected
 
 def fitness_case_v(A, d):
     """
@@ -575,20 +576,37 @@ def fitness_case_v(A, d):
     Uses Morrissey-Gulliksen least squares for incomplete comparison matrix.
     """
     f = np.matmul(np.matmul(np.linalg.pinv(np.matmul(A.T, A)), A.T), d)
-    return f - f.max() # NOTE: Shift so that maximum fitness is zero (cost function).
+    return f - f.max() # NOTE: Shift so that maximum fitness is zero (cost function)
 
-def labelling_loss(A, d, N, r, var, p_clip):
+def labelling_loss(A, d, y, N, r, var, p_clip, old=False):
     """
     Loss function l that this algorithm is ultimately trying to minimise.
     """
     N_diff = np.matmul(A, N)
     F_diff = np.matmul(N_diff, r)
-    F_std = np.sqrt(np.matmul(N_diff**2, var)) # Faster than actual matrix multiplication N A^T diag(var) A N^T.
-    F_std[np.logical_and(F_diff == 0, F_std == 0)] = 1 # Catch 0 / 0 error.
-    with np.errstate(divide="ignore"): 
-        d_pred = norm.ppf(np.clip(norm.cdf(F_diff / F_std), p_clip, 1-p_clip)) # Clip to prevent infinite values.
+    if old: sigma = np.sqrt(np.matmul(N_diff**2, var)) # Faster than actual matrix multiplication N A^T diag(var) A N^T
+    else:   sigma = np.sqrt(np.matmul(np.abs(A), np.matmul(N**2, var)))    
+    sigma[np.logical_and(F_diff == 0, sigma == 0)] = 1 # Handle 0/0 case
+    with np.errstate(divide="ignore"): y_pred = norm.cdf(F_diff / sigma) # Div/0 is fine
+    if old:
+        d_pred = norm.ppf(np.clip(y_pred, p_clip, 1-p_clip)) # Clip to prevent infinite values
         assert not np.isnan(d_pred).any()
-    return ((d_pred - d)**2).mean()
+        return ((d_pred - d)**2).mean() # MSE loss
+    else:
+        # Robust cross-entropy loss (https://stackoverflow.com/a/50024648)
+        loss = (-(xlogy(y, y_pred) + xlog1py(1 - y, -y_pred))).mean()
+        # print(A)
+        # print(N)
+        # print(r)
+        # print(var)
+        # print(N_diff)
+        # print(F_diff)
+        # print(sigma)
+        # print(y_pred)
+        # print(y)
+        # print("Loss new:", loss)
+        # print("Loss old:", ((norm.ppf(np.clip(y_pred, p_clip, 1-p_clip)) - d)**2).mean())
+        return loss
 
 def split_merge_cancel(split, merge):
     raise NotImplementedError("Still doesn't work")
