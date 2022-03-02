@@ -1,8 +1,12 @@
+from ..common.networks import SequentialNetwork
+from ..common.utils import reparameterise
+
 import hyperrectangles as hr
 
 import os
 import numpy as np
 np.set_printoptions(precision=3, suppress=True, edgeitems=30, linewidth=100000)   
+import torch
 from scipy.stats import norm
 from scipy.special import xlogy, xlog1py
 import networkx as nx
@@ -20,6 +24,7 @@ class PbrlObserver:
         self.P = P # Dictionary containing hyperparameters.
         if type(features) == dict: self.feature_names, self.features = list(features.keys()), features
         elif type(features) == list: self.feature_names, self.features = features, None
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.run_names = run_names if run_names is not None else [] # Order crucial to match with episodes.
         self.load_episodes(episodes if episodes is not None else [])
         self.interface = self.P["interface"]["kind"](self, **self.P["interface"]) if "interface" in self.P else None
@@ -38,25 +43,35 @@ class PbrlObserver:
             self._n_on_prev_batch = 0
             self._do_save = "save_freq" in self.P and self.P["save_freq"] > 0
             self._do_logs = "log_freq" in self.P and self.P["log_freq"] > 0
-        # Initialise empty tree.
-        space = hr.Space(dim_names=["ep", "reward"] + self.feature_names)
-        root = hr.node.Node(space, sorted_indices=space.all_sorted_indices) 
-        self.tree = hr.tree.Tree(
-            name="reward_function", 
-            root=root, 
-            split_dims=space.idxify(self.feature_names), 
-            eval_dims=space.idxify(["reward"])
-            )
-        # Mean and variance of reward components.  
-        self.r, self.var = np.zeros(self.m), np.zeros(self.m) 
-        # History of tree modifications.
-        self.history = {}
-
+        if self.P["reward_model"] == "tree":
+            # Initialise empty tree.
+            space = hr.Space(dim_names=["ep", "reward"] + self.feature_names)
+            root = hr.node.Node(space, sorted_indices=space.all_sorted_indices) 
+            self.tree = hr.tree.Tree(
+                name="reward_function", 
+                root=root, 
+                split_dims=space.idxify(self.feature_names), 
+                eval_dims=space.idxify(["reward"])
+                )
+            # Mean and variance of reward components.  
+            self.r, self.var = np.zeros(self.m), np.zeros(self.m) 
+            # History of tree modifications.
+            self.history = {}
+        elif self.P["reward_model"] == "net":
+            self.net = SequentialNetwork(device=self.device,
+                input_shape=len(self.feature_names),
+                output_size=2, # Mean and log standard deviation
+                code=[(None, 256), "R", (256, 256), "R", (256, 256), "R", (256, None)], # 3x 256 hidden units used in PEBBLE paper
+                lr=3e-4, # 3e-4 used in PEBBLE paper
+                )
+            self._reward_shift, self._reward_scale = 0., 1.
+            
     def link(self, agent):
         """
         NOTE: A little inelegant.
         """
         assert len(agent.memory) == 0, "Agent must be at the start of learning."
+        assert agent.device == self.device
         # agent.P["reward"] = self.reward
         agent.memory.__init__(agent.memory.capacity, reward=self.reward, relabel_mode="eager")
         if not agent.memory.lazy_reward: self.relabel_memory = agent.memory.relabel
@@ -74,11 +89,11 @@ class PbrlObserver:
         Map an array of transitions to an array of features.
         """
         if self.features is None: return transitions
-        return np.hstack([self.features[f](transitions).reshape(-1,1) for f in self.feature_names])
+        return torch.cat([self.features[f](transitions).reshape(-1,1) for f in self.feature_names], dim=1)
 
     def phi(self, transitions):
         """
-        Map an array of features to a vector of component indices.
+        Map an array of transitions to a vector of component indices.
         """
         # if len(transitions.shape) == 1: transitions = transitions.reshape(1,-1) # Handle single.
         return [self.tree.leaves.index(next(iter(self.tree.propagate([None,None]+list(f), mode="max")))) 
@@ -92,36 +107,47 @@ class PbrlObserver:
         for x in self.phi(transitions): n[x] += 1
         return n
 
-    def reward(self, states, actions, next_states):
+    def reward(self, states=None, actions=None, next_states=None, transitions=None, features=None, normalise=True, return_params=False):
         """
-        Reward function, defined over individual transitions. Expects a batch of transitions as three PyTorch tensors.
+        Reward function, defined over individual transitions. Can be given in (s,a,s'), transitions or features form.
         """
-        assert self.P["reward_source"] != "extrinsic", "This shouldn't have been called. Unwanted call to pbrl.link(agent)?"
-        transitions = np.hstack([ # NOTE: PyTorch -> NumPy is quite slow.
-            states.cpu().numpy(), 
-            [self.P["discrete_action_map"][a] for a in actions] if "discrete_action_map" in self.P else actions.cpu().numpy(), 
-            next_states.cpu().numpy()
-            ])
-        if self.P["reward_source"] == "tree":
-            x = self.phi(transitions)
-            # TODO: Implement RUNE.
-            if "rune_coef" in self.P: return self.r[x] + self.P["rune_coef"] * np.sqrt(self.var[x])
-            else: return self.r[x]
-        elif self.P["reward_source"] == "oracle":
+        assert self.P["reward_model"] != "extrinsic", "This shouldn't have been called. Unwanted call to pbrl.link(agent)?"
+        if "discrete_action_map" in self.P: actions = [self.P["discrete_action_map"][a] for a in actions] 
+        if features is None and transitions is None: transitions = torch.cat([states, actions, next_states], dim=1)
+        if self.P["reward_model"] == "oracle":
+            assert not return_params, "Oracle doesn't use normal distribution parameters"
             return self.interface.oracle(transitions)
-
-    def F(self, trajectory_i, trajectory_j=None):
+        elif self.P["reward_model"] == "tree":
+            x = self.phi(transitions)
+            mu, var = self.r[x], self.var[x]; std = torch.sqrt(var)     
+        elif self.P["reward_model"] == "net":
+            if features is None: features = self.feature_map(transitions)
+            mu, log_std = reparameterise(self.net(features), clamp=("soft", -2, 2), params=True)
+            mu, std = mu.squeeze(1), torch.exp(log_std).squeeze(1) * 100. # NOTE: Scaling up std output helps avoid extreme probabilities
+            if normalise:            
+                mu, std = (mu - self._reward_shift) / self._reward_scale, std / self._reward_scale  
+            var = torch.pow(std, 2.)
+        if return_params: return mu, var, std
+        elif "rune_coef" in self.P: return mu + self.P["rune_coef"] * std
+        else: return mu
+        
+    def fitness(self, trajectory=None, features=None):
         """
         Fitness function, defined over trajectories. Returns mean and variance.
         """
-        n = (self.n(trajectory_i) if trajectory_j is None else self.n(trajectory_i)-self.n(trajectory_j))
-        return [np.matmul(n, self.r), np.matmul(n, np.matmul(np.diag(self.var), n.T))]
+        if self.P["reward_model"] == "tree":
+            # https://www.statlect.com/probability-distributions/normal-distribution-linear-combinations
+            n = self.n(trajectory)
+            return np.matmul(n, self.r), np.matmul(n, np.matmul(np.diag(self.var), n.T))
+        elif self.P["reward_model"] == "net":
+            mu, var, _ = self.reward(transitions=trajectory, features=features, return_params=True)
+            return mu.sum(), var.sum()
 
     def F_ucb_for_pairs(self, trajectories):
         """
         Compute UCB fitness for a sequence of trajectories and sum for all pairs to create a matrix.
         """
-        mu, var = np.array([self.F(tr) for tr in trajectories]).T
+        with torch.no_grad(): mu, var = np.array([self.fitness(tr) for tr in trajectories]).T
         F_ucb = mu + self.P["sampling"]["num_std"] * np.sqrt(var)
         return np.add(F_ucb.reshape(-1,1), F_ucb.reshape(1,-1))
 
@@ -129,7 +155,8 @@ class PbrlObserver:
         """
         Predicted probability of trajectory i being preferred to trajectory j.
         """
-        F_diff, F_var = self.F(trajectory_i, trajectory_j)
+        raise NotImplementedError("Old!")
+        F_diff, F_var = self.fitness(trajectory_i, trajectory_j)
         with np.errstate(divide="ignore"): return norm.cdf(F_diff / np.sqrt(F_var))
 
 # ==============================================================================
@@ -154,12 +181,11 @@ class PbrlObserver:
         """
         NOTE: To ensure video saving, this is completed *after* env.reset() is called for the next episode.
         """     
-        # Convert to NumPy now that appending is finished.
-        self._current_ep = np.array(self._current_ep) 
+        self._current_ep = torch.tensor(self._current_ep, device=self.device) # Convert to tensor once appending finished
         logs = {}
         # Log reward sums.
-        if self.P["reward_source"] == "tree": 
-            logs["reward_sum_tree"] = self.F(self._current_ep)[0] # NOTE: This overwrites that logged by the environment.
+        if self.P["reward_model"] in {"net","tree"}: 
+            logs["reward_sum_model"] = self.fitness(self._current_ep)[0] 
         if self.interface is not None and self.interface.oracle is not None: 
             logs["reward_sum_oracle"] = sum(self.interface.oracle(self._current_ep))
         # Retain episodes for use in reward inference with a specified frequency.
@@ -264,75 +290,122 @@ class PbrlObserver:
         # Split into training and validation sets.
         Pr_train, Pr_val = train_val_split(self.Pr)
                 
-        A, d, y, self._connected = construct_A_and_d(Pr_train, self.P["p_clip"])
+        A, y, self._connected = construct_A_and_y(Pr_train)
         print(f"Connected episodes: {len(self._connected)} / {len(self.episodes)}")
         if len(self._connected) == 0: print("=== None connected ==="); return
+        ep_lengths = [len(self.episodes[i]) for i in self._connected]
 
-        # Compute fitness estimates for episodes that are connected to the training set comparison graph.
-        self._ep_fitness_cv = fitness_case_v(A, d)
+        # Apply feature mapping to all episodes that are connected to the training set comparison graph.
+        features = self.feature_map(torch.cat([self.episodes[i] for i in self._connected]))
 
-        # Uniform temporal prior. 
-        # NOTE: scaling by episode lengths (making ep fitness correspond to sum not mean) causes weird behaviour.
-        ep_length = np.array([len(self.episodes[i]) for i in self._connected])
-        reward_target = self._ep_fitness_cv # * ep_length.mean() / ep_length
-        
-        # Populate tree. 
-        self.tree.space.data = np.hstack((
-            np.vstack([np.array([[i, r]] * l) for (i, r, l) in zip(self._connected, reward_target, ep_length)]), # Episode number and reward target.
-            self.feature_map(np.vstack([self.episodes[i] for i in self._connected]))                             # Feature vector.
-            ))
-        if reset_tree: self.tree.prune_to(self.tree.root) 
-        self.tree.populate()
-        num_samples = len(self.tree.space.data)
+        if self.P["reward_model"] == "net":
+            # norm = torch.distributions.Normal(0, 1)
+            # loss_func = torch.nn.BCELoss()
 
-        # Perform best-first splitting until m_max is reached.
-        history_split = []        
-        with tqdm(total=self.P["m_max"], initial=self.m, desc="Splitting") as pbar:
-            while self.m < self.P["m_max"] and len(self.tree.split_queue) > 0:
-                result = self.tree.split_next_best(min_samples_leaf=self.P["min_samples_leaf"]) 
-                if result is not None:
-                    pbar.update(1)
-                    node, dim, threshold = result
-                    history_split.append([self.m, node, dim, threshold, None, sum(self.tree.gather(("var_sum", "reward"))) / num_samples])        
+            ep_features = torch.split(features, ep_lengths)
+            k_train, n_train = A.shape
+            rng = np.random.default_rng()
+            for _ in range(self.P["num_batches_per_update"]):
+                batch = rng.choice(k_train, size=min(k_train, self.P["batch_size"]), replace=False)
+                A_batch = torch.tensor(A[batch], device=self.device)
+                y_batch = torch.tensor(y[batch], device=self.device).float()
+                in_batch = np.abs(A[batch]).sum(axis=0) > 0
+                F_pred, var_pred = torch.zeros(n_train, device=self.device), torch.zeros(n_train, device=self.device)
+                for i in range(n_train):
+                    if in_batch[i]: F_pred[i], var_pred[i] = self.fitness(features=ep_features[i])
+                if False: # Thurstone's Case III
+                    # TODO: Try using log_softmax loss for stability
+                    A_batch = A_batch.float()
+                    F_diff = torch.matmul(A_batch, F_pred)
+                    sigma = torch.sqrt(torch.matmul(torch.abs(A_batch), var_pred))
+                    y_pred = norm.cdf(F_diff / sigma)
+                    loss = loss_func(y_pred, y_batch) # Binary cross-entropy loss, PEBBLE equation 4
+                else: # Bradley-Terry model
+                    # https://github.com/rll-research/BPref/blob/f3ece2ecf04b5d11b276d9bbb19b8004c29429d1/reward_model.py#L142
+                    F_pairs = torch.vstack([F_pred[pair] for pair in torch.abs(A_batch).bool()])
+                    log_y_pred = torch.nn.functional.log_softmax(F_pairs, dim=1)
+                    # NOTE: Relies on j coming first in the columns of A
+                    loss = -(torch.column_stack([1-y_batch, y_batch]) * log_y_pred).sum() / y_batch.shape[0]
+
+                    # y_pred = torch.exp(log_y_pred[:,1])
+                # print(torch.vstack((y_pred, y_batch)).detach().numpy())
+                print(loss.item())
+
+                self.net.optimise(loss, retain_graph=False)
+
+                # from torchviz import make_dot
+                # make_dot(loss).render("loss_graph", format="png")
+            
+            # Normalise rewards to be negative on the training set, with unit standard deviation
+            with torch.no_grad(): all_rewards = self.reward(features=features, normalise=False)
+            self._reward_shift, self._reward_scale = all_rewards.max(), all_rewards.std()
+
+            # all_rewards = self.reward(features=features).detach().numpy()
+            # print(all_rewards.max(), all_rewards.std())
+            # plt.hist(all_rewards)
+            # plt.show()
         
-        # Perform minimal cost complexity pruning until labelling loss is minimised.
-        N = np.array([self.n(self.episodes[i]) for i in self._connected])
-        tree_before_merge = self.tree.clone()                
-        history_merge, parent_num, pruned_nums = [], None, None
-        with tqdm(total=self.P["m_max"], initial=self.m, desc="Merging") as pbar:
-            while True: 
-                # Measure loss.
-                r, var, var_sum = self.tree.gather(("mean","reward"),("var","reward"),("var_sum","reward"))
-                history_merge.append([self.m, parent_num, pruned_nums,
-                    labelling_loss(A, d, y, N, r, var, self.P["p_clip"]), # True labelling loss.
-                    sum(var_sum) / num_samples # Proxy loss: variance.
-                    ])
-                if self.m <= self.P["m_stop_merge"]: break
-                # Perform prune.
-                parent_num, pruned_nums = self.tree.prune_mccp()
-                pbar.update(-1)
-                # Efficiently update N array.
-                assert pruned_nums[-1] == pruned_nums[0] + len(pruned_nums)-1
-                N[:,pruned_nums[0]] = N[:,pruned_nums].sum(axis=1)
-                N = np.delete(N, pruned_nums[1:], axis=1)
-                if False: assert (N == np.array([self.n(self.episodes[i]) for i in self._connected])).all() # Sense check.     
-        
-        # Now prune to minimum-loss size.
-        # NOTE: Size regularisation applied here; use reversed list to ensure *last* occurrence returned.
-        optimum = (len(history_merge)-1) - np.argmin([l + (self.P["alpha"] * m) for m,_,_,l,_ in reversed(history_merge)]) 
-        self.tree = tree_before_merge # Reset to pre-merging stage.
-        for _, parent_num, pruned_nums_prev, _, _ in history_merge[:optimum+1]: 
-            if parent_num is None: continue # First entry of history_merge will have this.
-            pruned_nums = self.tree.prune_to(self.tree._get_nodes()[parent_num])
-            assert set(pruned_nums_prev) == set(pruned_nums)
-        # history_split, history_merge = split_merge_cancel(history_split, history_merge)
-        self.history[history_key] = {"split": history_split, "merge": history_merge, "m": self.m}
-        print(self.tree.space)
-        print(self.tree)
-        print(hr.rules(self.tree, pred_dims="reward", sf=5))#, out_name="tree_func"))
+        elif self.P["reward_model"] == "tree":
+            # Compute fitness estimates for connected episodes.
+            self._ep_fitness_cv = fitness_case_v(A, y, self.P["p_clip"])
+            # Uniform temporal prior. 
+            # NOTE: scaling by episode lengths (making ep fitness correspond to sum not mean) causes weird behaviour.
+            reward_target = self._ep_fitness_cv # * ep_lengths.mean() / ep_lengths
+            # Populate tree. 
+            self.tree.space.data = np.hstack((
+                np.vstack([np.array([[i, r]] * l) for (i, r, l) in zip(self._connected, reward_target, ep_lengths)]), # Episode number and reward target.
+                features                             
+                ))
+            if reset_tree: self.tree.prune_to(self.tree.root) 
+            self.tree.populate()
+            num_samples = len(self.tree.space.data)
+            # Perform best-first splitting until m_max is reached.
+            history_split = []        
+            with tqdm(total=self.P["m_max"], initial=self.m, desc="Splitting") as pbar:
+                while self.m < self.P["m_max"] and len(self.tree.split_queue) > 0:
+                    result = self.tree.split_next_best(min_samples_leaf=self.P["min_samples_leaf"]) 
+                    if result is not None:
+                        pbar.update(1)
+                        node, dim, threshold = result
+                        history_split.append([self.m, node, dim, threshold, None, sum(self.tree.gather(("var_sum", "reward"))) / num_samples])        
+            # Perform minimal cost complexity pruning until labelling loss is minimised.
+            N = np.array([self.n(self.episodes[i]) for i in self._connected])
+            tree_before_merge = self.tree.clone()                
+            history_merge, parent_num, pruned_nums = [], None, None
+            with tqdm(total=self.P["m_max"], initial=self.m, desc="Merging") as pbar:
+                while True: 
+                    # Measure loss.
+                    r, var, var_sum = self.tree.gather(("mean","reward"),("var","reward"),("var_sum","reward"))
+                    history_merge.append([self.m, parent_num, pruned_nums,
+                        labelling_loss(A, y, N, r, var, self.P["p_clip"]), # True labelling loss.
+                        sum(var_sum) / num_samples # Proxy loss: variance.
+                        ])
+                    if self.m <= self.P["m_stop_merge"]: break
+                    # Perform prune.
+                    parent_num, pruned_nums = self.tree.prune_mccp()
+                    pbar.update(-1)
+                    # Efficiently update N array.
+                    assert pruned_nums[-1] == pruned_nums[0] + len(pruned_nums)-1
+                    N[:,pruned_nums[0]] = N[:,pruned_nums].sum(axis=1)
+                    N = np.delete(N, pruned_nums[1:], axis=1)
+                    if False: assert (N == np.array([self.n(self.episodes[i]) for i in self._connected])).all() # Sense check.     
+            # Now prune to minimum-loss size.
+            # NOTE: Size regularisation applied here; use reversed list to ensure *last* occurrence returned.
+            optimum = (len(history_merge)-1) - np.argmin([l + (self.P["alpha"] * m) for m,_,_,l,_ in reversed(history_merge)]) 
+            self.tree = tree_before_merge # Reset to pre-merging stage.
+            for _, parent_num, pruned_nums_prev, _, _ in history_merge[:optimum+1]: 
+                if parent_num is None: continue # First entry of history_merge will have this.
+                pruned_nums = self.tree.prune_to(self.tree._get_nodes()[parent_num])
+                assert set(pruned_nums_prev) == set(pruned_nums)
+            # history_split, history_merge = split_merge_cancel(history_split, history_merge)
+            self.compute_r_and_var()
+            self.history[history_key] = {"split": history_split, "merge": history_merge, "m": self.m}
+            print(self.tree.space)
+            print(self.tree)
+            print(hr.rules(self.tree, pred_dims="reward", sf=5))#, out_name="tree_func"))
                 
         # Store updated result.
-        self.compute_r_and_var(); self.relabel_memory()  
+        self.relabel_memory()  
 
     def compute_r_and_var(self):
         self.r = np.array(self.tree.gather(("mean","reward"))) 
@@ -442,7 +515,7 @@ class PbrlObserver:
             else: baseline = [sum(self.interface.oracle(ep)) for ep in self.episodes]
             xlabel = "Oracle Fitness"
             ranking = np.argsort(baseline)
-        mu, var = np.array([self.F(self.episodes[i]) for i in ranking]).T
+        mu, var = np.array([self.fitness(self.episodes[i]) for i in ranking]).T
         std = np.sqrt(var)
         if ax is None: _, ax = plt.subplots()
         baseline_sorted = sorted(baseline)
@@ -464,7 +537,7 @@ class PbrlObserver:
 
     def plot_fitness_pdfs(self):
         """PDFs of fitness predictions."""
-        mu, var = np.array([self.F(ep) for ep in self.episodes]).T
+        mu, var = np.array([self.fitness(ep) for ep in self.episodes]).T
         mn, mx = np.min(mu - 3*var**.5), np.max(mu + 3*var**.5)
         rng = np.arange(mn, mx, (mx-mn)/1000)
         P = np.array([norm.pdf(rng, m, v**.5) for m, v in zip(mu, var)])
@@ -493,7 +566,7 @@ class PbrlObserver:
         n = len(self.episodes)
         self.graph.add_nodes_from(range(n), fitness=np.nan, fitness_cv=np.nan)
         for i in range(n): 
-            if self.episodes[i] is not None: self.graph.nodes[i]["fitness"] = self.F(self.episodes[i])[0]
+            if self.episodes[i] is not None: self.graph.nodes[i]["fitness"] = self.fitness(self.episodes[i])[0]
         for i, f in zip(self._connected, self._ep_fitness_cv): 
             self.graph.nodes[i]["fitness_cv"] = f * len(self.episodes[i])
         self.graph.add_weighted_edges_from([(j, i, self.Pr[i,j]) for i in range(n) for j in range(n) if not np.isnan(self.Pr[i,j])])
@@ -501,10 +574,6 @@ class PbrlObserver:
         plt.figure(figsize=figsize)
         fitness = list(nx.get_node_attributes(self.graph, "fitness").values())
         fitness_cv = list(nx.get_node_attributes(self.graph, "fitness_cv").values())
-
-    
-
-
         vmin, vmax = min(np.nanmin(fitness), np.nanmin(fitness_cv)), max(np.nanmax(fitness), np.nanmax(fitness_cv))
         pos = nx.drawing.nx_agraph.graphviz_layout(self.graph, prog="neato")
         nx.draw_networkx_nodes(self.graph, pos=pos, 
@@ -538,8 +607,8 @@ def load(fname):
     pbrl = PbrlObserver(dict["params"], features=dict["tree"].space.dim_names[2:])
     pbrl.Pr, pbrl.tree = dict["Pr"], dict["tree"]
     pbrl.compute_r_and_var()
-    A, d, _, pbrl._connected = construct_A_and_d(pbrl.Pr, pbrl.P["p_clip"])
-    pbrl._ep_fitness_cv = fitness_case_v(A, d)
+    A, y, pbrl._connected = construct_A_and_y(pbrl.Pr)
+    pbrl._ep_fitness_cv = fitness_case_v(A, y, pbrl.P["p_clip"])
     pbrl.episodes = [None for _ in range(pbrl.Pr.shape[0])]
     for i, ep in zip(pbrl._connected, hr.group_along_dim(dict["tree"].space, "ep")):
         assert i == ep[0,0], "pbrl._connected does not match episodes in tree."
@@ -555,57 +624,45 @@ def train_val_split(Pr):
     # pairs = [(i, j) for i, j in np.argwhere(np.triu(np.invert(np.isnan(Pr))))]
     return Pr, None
 
-def construct_A_and_d(Pr, p_clip):
+def construct_A_and_y(Pr):
     """
-    Construct A and d matrices required by Morrissey-Gulliksen method.
+    Construct A and y matrices from a matrix of preference probabilities.
     """
     pairs, y, connected = [], [], set()
     for i, j in np.argwhere(np.logical_not(np.isnan(Pr))):
         if j < i: pairs.append([i, j]); y.append(Pr[i, j]); connected = connected | {i, j}
     y = np.array(y); connected = sorted(list(connected))
-    # Comparison matrix.
     A = np.zeros((len(pairs), len(connected)), dtype=int)
     for l, (i, j) in enumerate(pairs): A[l, [connected.index(i), connected.index(j)]] = [1, -1] 
-    # Target vector.
-    d = norm.ppf(np.clip(y, p_clip, 1 - p_clip)) 
-    return A, d, y, connected
+    return A, y, connected
 
-def fitness_case_v(A, d):
+def fitness_case_v(A, y, p_clip):
     """
     Construct fitness estimates under Thurstone's Case V model. 
     Uses Morrissey-Gulliksen least squares for incomplete comparison matrix.
     """
+    d = norm.ppf(np.clip(y, p_clip, 1-p_clip)) # Clip to prevent infinite values
     f = np.matmul(np.matmul(np.linalg.pinv(np.matmul(A.T, A)), A.T), d)
     return f - f.max() # NOTE: Shift so that maximum fitness is zero (cost function)
 
-def labelling_loss(A, d, y, N, r, var, p_clip, old=False):
+def labelling_loss(A, y, N, r, var, p_clip, old=False):
     """
     Loss function l that this algorithm is ultimately trying to minimise.
     """
     N_diff = np.matmul(A, N)
     F_diff = np.matmul(N_diff, r)
     if old: sigma = np.sqrt(np.matmul(N_diff**2, var)) # Faster than actual matrix multiplication N A^T diag(var) A N^T
-    else:   sigma = np.sqrt(np.matmul(np.abs(A), np.matmul(N**2, var)))    
+    else:   sigma = np.sqrt(np.matmul(np.abs(A), np.matmul(N**2, var)))   
     sigma[np.logical_and(F_diff == 0, sigma == 0)] = 1 # Handle 0/0 case
     with np.errstate(divide="ignore"): y_pred = norm.cdf(F_diff / sigma) # Div/0 is fine
     if old:
-        d_pred = norm.ppf(np.clip(y_pred, p_clip, 1-p_clip)) # Clip to prevent infinite values
+        d = norm.ppf(np.clip(y, p_clip, 1-p_clip)) 
+        d_pred = norm.ppf(np.clip(y_pred, p_clip, 1-p_clip)) 
         assert not np.isnan(d_pred).any()
         return ((d_pred - d)**2).mean() # MSE loss
     else:
         # Robust cross-entropy loss (https://stackoverflow.com/a/50024648)
         loss = (-(xlogy(y, y_pred) + xlog1py(1 - y, -y_pred))).mean()
-        # print(A)
-        # print(N)
-        # print(r)
-        # print(var)
-        # print(N_diff)
-        # print(F_diff)
-        # print(sigma)
-        # print(y_pred)
-        # print(y)
-        # print("Loss new:", loss)
-        # print("Loss old:", ((norm.ppf(np.clip(y_pred, p_clip, 1-p_clip)) - d)**2).mean())
         return loss
 
 def split_merge_cancel(split, merge):

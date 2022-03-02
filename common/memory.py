@@ -30,13 +30,14 @@ class ReplayMemory:
         """Save a transition."""
         if type(action) == int: action_dtype = torch.int64
         elif type(action) == np.ndarray: action_dtype = torch.float
-        action = torch.tensor([action], device=state.device, dtype=action_dtype)
-        done = torch.tensor([done], device=state.device, dtype=torch.bool)
+        action = torch.tensor(action, device=state.device, dtype=action_dtype).unsqueeze(0)
+        done = torch.tensor(done, device=state.device, dtype=torch.bool).unsqueeze(0)
         el = [state, action, next_state, done]
         # Save reward if applicable.
         if not self.lazy_reward: 
-            if self.reward is not None: reward = self.reward(state, action, next_state)[0] # Eagerly compute intrinsic reward.           
-            el.append(torch.tensor([reward], device=state.device, dtype=torch.float))
+            if self.reward is not None: 
+                with torch.no_grad(): el.append(self.reward(state, action, next_state)) # Eagerly compute intrinsic reward.           
+            else: el.append(torch.tensor(reward, device=state.device, dtype=torch.float).unsqueeze(0))
         # Extend memory if capacity not yet reached.
         if len(self.memory) < self.capacity: self.memory.append(None) 
         # Overwrite current entry at this position.
@@ -61,8 +62,9 @@ class ReplayMemory:
         actions = torch.cat(batch.action)
         next_states = torch.cat(batch.next_state)
         # If have intrinsic reward function and relabel_mode=="lazy", use it to lazily compute rewards at the point of sampling.
-        rewards = torch.tensor(self.reward(states, actions, next_states), device=states.device, dtype=torch.float) \
-                  if (self.lazy_reward or mode == "relabel") else torch.cat(batch.reward) 
+        with torch.no_grad():
+            rewards = torch.tensor(self.reward(states, actions, next_states), device=states.device, dtype=torch.float) \
+                    if (self.lazy_reward or mode == "relabel") else torch.cat(batch.reward) 
         if keep_terminal_next: nonterminal_mask = None
         else: 
             nonterminal_mask = ~torch.cat(batch.done)
