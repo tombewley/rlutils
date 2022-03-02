@@ -54,7 +54,8 @@ class PbrlObserver:
                 eval_dims=space.idxify(["reward"])
                 )
             # Mean and variance of reward components.  
-            self.r, self.var = np.zeros(self.m), np.zeros(self.m) 
+            self.r = torch.zeros(self.m, device=self.device)
+            self.var = torch.zeros(self.m, device=self.device) 
             # History of tree modifications.
             self.history = {}
         elif self.P["reward_model"] == "net":
@@ -66,6 +67,14 @@ class PbrlObserver:
                 )
             self._reward_shift, self._reward_scale = 0., 1.
             
+    def load_episodes(self, episodes):
+        """
+        Load a dataset of episodes and initialise data structures.
+        """
+        self.episodes = episodes
+        self.Pr = np.full((len(episodes), len(episodes)), np.nan)
+        self._current_ep = []
+    
     def link(self, agent):
         """
         NOTE: A little inelegant.
@@ -76,8 +85,6 @@ class PbrlObserver:
         agent.memory.__init__(agent.memory.capacity, reward=self.reward, relabel_mode="eager")
         if not agent.memory.lazy_reward: self.relabel_memory = agent.memory.relabel
 
-    @property
-    def feedback_count(self): return np.triu(np.invert(np.isnan(self.Pr))).sum()
     @property
     def m(self): return len(self.tree.leaves)
 
@@ -116,7 +123,7 @@ class PbrlObserver:
         if features is None and transitions is None: transitions = torch.cat([states, actions, next_states], dim=1)
         if self.P["reward_model"] == "oracle":
             assert not return_params, "Oracle doesn't use normal distribution parameters"
-            return self.interface.oracle(transitions)
+            return torch.tensor(self.interface.oracle(transitions), device=self.device)
         elif self.P["reward_model"] == "tree":
             x = self.phi(transitions)
             mu, var = self.r[x], self.var[x]; std = torch.sqrt(var)     
@@ -162,14 +169,6 @@ class PbrlObserver:
 # ==============================================================================
 # FUNCTIONS FOR EXECUTING THE LEARNING PROCESS
 
-    def load_episodes(self, episodes):
-        """
-        Load a dataset of episodes and initialise data structures.
-        """
-        self.episodes = episodes
-        self.Pr = np.full((len(episodes), len(episodes)), np.nan)
-        self._current_ep = []
-
     def per_timestep(self, ep, t, state, action, next_state, reward, done, info, extra):     
         """
         Store transition for current timestep.
@@ -213,7 +212,7 @@ class PbrlObserver:
                 self.update(history_key=(ep+1))
                 self._batch_num += 1 
                 self._n_on_prev_batch = len(self.episodes)
-            logs["feedback_count"] = self.feedback_count
+            logs["feedback_count"] = self._k
             # Periodically save out and plot.
             if self._do_save and (ep+1) % self.P["save_freq"] == 0: self.save(history_key=(ep+1))
             if self._do_logs and (ep+1) % self.P["log_freq"] == 0: self.make_and_save_logs(history_key=(ep+1))   
@@ -287,15 +286,14 @@ class PbrlObserver:
         Update the reward function to reflect the current feedback dataset.
         If reset_tree=True, tree is first pruned back to its root (i.e. start from scratch).
         """
-        # Split into training and validation sets.
+        # Split into training and validation sets
         Pr_train, Pr_val = train_val_split(self.Pr)
-                
+        # Assemble data structures needed for learning
         A, y, self._connected = construct_A_and_y(Pr_train)
         print(f"Connected episodes: {len(self._connected)} / {len(self.episodes)}")
         if len(self._connected) == 0: print("=== None connected ==="); return
         ep_lengths = [len(self.episodes[i]) for i in self._connected]
-
-        # Apply feature mapping to all episodes that are connected to the training set comparison graph.
+        # Apply feature mapping to all episodes that are connected to the training set comparison graph
         features = self.feature_map(torch.cat([self.episodes[i] for i in self._connected]))
 
         if self.P["reward_model"] == "net":
@@ -408,20 +406,18 @@ class PbrlObserver:
         self.relabel_memory()  
 
     def compute_r_and_var(self):
-        self.r = np.array(self.tree.gather(("mean","reward"))) 
-        self.var = np.array(self.tree.gather(("var","reward")))   
+        self.r = torch.tensor(self.tree.gather(("mean","reward")), device=self.device)
+        self.var = torch.tensor(self.tree.gather(("var","reward")), device=self.device)
 
     def relabel_memory(self): pass  
 
     def save(self, history_key):
         path = f"run_logs/{self.run_names[-1]}"
         if not os.path.exists(path): os.makedirs(path)
-        # f = self.features; self.features = None # NOTE: Lambda functions can't be Pickled
         dump({"params": self.P,
               "Pr": self.Pr,
               "tree": self.tree
         }, f"{path}/{history_key}.pbrl")
-        # self.features = f
 
 # ==============================================================================
 # VISUALISATION
