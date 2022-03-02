@@ -110,7 +110,7 @@ class PbrlObserver:
         """
         Map an array of transitions to a vector of component counts.
         """
-        n = np.zeros(self.m, dtype=int)
+        n = torch.zeros(self.m, device=self.device)
         for x in self.phi(transitions): n[x] += 1
         return n
 
@@ -145,7 +145,7 @@ class PbrlObserver:
         if self.P["reward_model"] == "tree":
             # https://www.statlect.com/probability-distributions/normal-distribution-linear-combinations
             n = self.n(trajectory)
-            return np.matmul(n, self.r), np.matmul(n, np.matmul(np.diag(self.var), n.T))
+            return n @ self.r, n @ np.diag(self.var) @ n.T
         elif self.P["reward_model"] == "net":
             mu, var, _ = self.reward(transitions=trajectory, features=features, return_params=True)
             return mu.sum(), var.sum()
@@ -289,7 +289,7 @@ class PbrlObserver:
         # Split into training and validation sets
         Pr_train, Pr_val = train_val_split(self.Pr)
         # Assemble data structures needed for learning
-        A, y, self._connected = construct_A_and_y(Pr_train)
+        A, y, self._connected = construct_A_and_y(Pr_train, device=self.device)
         print(f"Connected episodes: {len(self._connected)} / {len(self.episodes)}")
         if len(self._connected) == 0: print("=== None connected ==="); return
         ep_lengths = [len(self.episodes[i]) for i in self._connected]
@@ -314,8 +314,8 @@ class PbrlObserver:
                 if False: # Thurstone's Case III
                     # TODO: Try using log_softmax loss for stability
                     A_batch = A_batch.float()
-                    F_diff = torch.matmul(A_batch, F_pred)
-                    sigma = torch.sqrt(torch.matmul(torch.abs(A_batch), var_pred))
+                    F_diff = A_batch @ F_pred
+                    sigma = torch.sqrt(torch.abs(A_batch) @ var_pred)
                     y_pred = norm.cdf(F_diff / sigma)
                     loss = loss_func(y_pred, y_batch) # Binary cross-entropy loss, PEBBLE equation 4
                 else: # Bradley-Terry model
@@ -348,7 +348,7 @@ class PbrlObserver:
             self._ep_fitness_cv = fitness_case_v(A, y, self.P["p_clip"])
             # Uniform temporal prior. 
             # NOTE: scaling by episode lengths (making ep fitness correspond to sum not mean) causes weird behaviour.
-            reward_target = self._ep_fitness_cv # * ep_lengths.mean() / ep_lengths
+            reward_target = self._ep_fitness_cv # * np.mean(ep_lengths) / ep_lengths
             # Populate tree. 
             self.tree.space.data = np.hstack((
                 np.vstack([np.array([[i, r]] * l) for (i, r, l) in zip(self._connected, reward_target, ep_lengths)]), # Episode number and reward target.
@@ -367,15 +367,16 @@ class PbrlObserver:
                         node, dim, threshold = result
                         history_split.append([self.m, node, dim, threshold, None, sum(self.tree.gather(("var_sum", "reward"))) / num_samples])        
             # Perform minimal cost complexity pruning until labelling loss is minimised.
-            N = np.array([self.n(self.episodes[i]) for i in self._connected])
+            N = torch.vstack([self.n(self.episodes[i]) for i in self._connected])
             tree_before_merge = self.tree.clone()                
             history_merge, parent_num, pruned_nums = [], None, None
             with tqdm(total=self.P["m_max"], initial=self.m, desc="Merging") as pbar:
                 while True: 
                     # Measure loss.
                     r, var, var_sum = self.tree.gather(("mean","reward"),("var","reward"),("var_sum","reward"))
+                    r, var = torch.tensor(r, device=self.device).float(), torch.tensor(var, device=self.device).float()
                     history_merge.append([self.m, parent_num, pruned_nums,
-                        labelling_loss(A, y, N, r, var, self.P["p_clip"]), # True labelling loss.
+                        labelling_loss(A, y, N, r, var, self.P["p_clip"]).item(), # True labelling loss.
                         sum(var_sum) / num_samples # Proxy loss: variance.
                         ])
                     if self.m <= self.P["m_stop_merge"]: break
@@ -402,12 +403,12 @@ class PbrlObserver:
             print(self.tree)
             print(hr.rules(self.tree, pred_dims="reward", sf=5))#, out_name="tree_func"))
                 
-        # Store updated result.
+        # Relabel the agent's replay memory using the updated reward function
         self.relabel_memory()  
 
     def compute_r_and_var(self):
-        self.r = torch.tensor(self.tree.gather(("mean","reward")), device=self.device)
-        self.var = torch.tensor(self.tree.gather(("var","reward")), device=self.device)
+        self.r = torch.tensor(self.tree.gather(("mean","reward")), device=self.device).float()
+        self.var = torch.tensor(self.tree.gather(("var","reward")), device=self.device).float()
 
     def relabel_memory(self): pass  
 
@@ -603,7 +604,7 @@ def load(fname):
     pbrl = PbrlObserver(dict["params"], features=dict["tree"].space.dim_names[2:])
     pbrl.Pr, pbrl.tree = dict["Pr"], dict["tree"]
     pbrl.compute_r_and_var()
-    A, y, pbrl._connected = construct_A_and_y(pbrl.Pr)
+    A, y, pbrl._connected = construct_A_and_y(pbrl.Pr, device=pbrl.device)
     pbrl._ep_fitness_cv = fitness_case_v(A, y, pbrl.P["p_clip"])
     pbrl.episodes = [None for _ in range(pbrl.Pr.shape[0])]
     for i, ep in zip(pbrl._connected, hr.group_along_dim(dict["tree"].space, "ep")):
@@ -620,16 +621,17 @@ def train_val_split(Pr):
     # pairs = [(i, j) for i, j in np.argwhere(np.triu(np.invert(np.isnan(Pr))))]
     return Pr, None
 
-def construct_A_and_y(Pr):
+def construct_A_and_y(Pr, device):
     """
     Construct A and y matrices from a matrix of preference probabilities.
     """
     pairs, y, connected = [], [], set()
     for i, j in np.argwhere(np.logical_not(np.isnan(Pr))):
         if j < i: pairs.append([i, j]); y.append(Pr[i, j]); connected = connected | {i, j}
-    y = np.array(y); connected = sorted(list(connected))
-    A = np.zeros((len(pairs), len(connected)), dtype=int)
-    for l, (i, j) in enumerate(pairs): A[l, [connected.index(i), connected.index(j)]] = [1, -1] 
+    y = torch.tensor(y, device=device)
+    connected = sorted(list(connected))
+    A = torch.zeros((len(pairs), len(connected)), device=device)
+    for l, (i, j) in enumerate(pairs): A[l, [connected.index(i), connected.index(j)]] = torch.tensor([1., -1.])
     return A, y, connected
 
 def fitness_case_v(A, y, p_clip):
@@ -638,17 +640,17 @@ def fitness_case_v(A, y, p_clip):
     Uses Morrissey-Gulliksen least squares for incomplete comparison matrix.
     """
     d = norm.ppf(np.clip(y, p_clip, 1-p_clip)) # Clip to prevent infinite values
-    f = np.matmul(np.matmul(np.linalg.pinv(np.matmul(A.T, A)), A.T), d)
+    f, _, _, _ = np.linalg.lstsq(A.T @ A, A.T @ d, rcond=None)
     return f - f.max() # NOTE: Shift so that maximum fitness is zero (cost function)
 
 def labelling_loss(A, y, N, r, var, p_clip, old=False):
     """
     Loss function l that this algorithm is ultimately trying to minimise.
     """
-    N_diff = np.matmul(A, N)
-    F_diff = np.matmul(N_diff, r)
-    if old: sigma = np.sqrt(np.matmul(N_diff**2, var)) # Faster than actual matrix multiplication N A^T diag(var) A N^T
-    else:   sigma = np.sqrt(np.matmul(np.abs(A), np.matmul(N**2, var)))   
+    N_diff = A @ N
+    F_diff = N_diff @ r
+    if old: sigma = np.sqrt(N_diff**2 @ var) # Faster than actual matrix multiplication N A^T diag(var) A N^T
+    else:   sigma = np.sqrt(np.abs(A) @ N**2 @ var)   
     sigma[np.logical_and(F_diff == 0, sigma == 0)] = 1 # Handle 0/0 case
     with np.errstate(divide="ignore"): y_pred = norm.cdf(F_diff / sigma) # Div/0 is fine
     if old:
