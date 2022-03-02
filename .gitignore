@@ -1,7 +1,4 @@
-wandb/**
-video/**
-runs/**
-agents/**
+wandb/
+video/
+misc/
 __pycache__/
-.idea/
-*.out
