@@ -1,13 +1,11 @@
+from ...common.networks import SequentialNetwork
+from ...common.utils import reparameterise
+
 import torch
 import numpy as np
 from scipy.stats import norm
 from scipy.special import xlogy, xlog1py
 from tqdm import tqdm
-
-import hyperrectangles as hr
-
-from ..common.networks import SequentialNetwork
-from ..common.utils import reparameterise
 
 
 class RewardNet:
@@ -85,6 +83,10 @@ class RewardNet:
 
 class RewardTree:
     def __init__(self, device, feature_names, P):
+        # === Lazy import ===
+        import hyperrectangles as hr
+        self.hr_rules = hr.rules
+        # ===================
         self.device = device
         self.P = P
         space = hr.Space(dim_names=["ep", "reward"] + feature_names)
@@ -175,7 +177,7 @@ class RewardTree:
         self.history[history_key] = {"split": history_split, "merge": history_merge, "m": self.m}
         print(self.tree.space)
         print(self.tree)
-        print(hr.rules(self.tree, pred_dims="reward", sf=5))#, out_name="tree_func"))
+        print(self.hr_rules(self.tree, pred_dims="reward", sf=5))#, out_name="tree_func"))
 
     def features_to_indices(self, features):
         return [self.tree.leaves.index(next(iter(

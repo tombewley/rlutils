@@ -115,17 +115,3 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers={}, run_id=
         agent.env.close()
 
     return run_id, run_name # Return run ID and name for reference.
-
-
-# TODO: Move elsewhere.
-class SumLogger:
-    def __init__(self, P): 
-        self.P = P
-        self.run_names = []
-    def per_timestep(self, ep, t, state, action, next_state, reward, done, info, extra):
-        if self.P["source"] == "info": c = info[self.P["key"]]
-        elif self.P["source"] == "extra": c = extra[self.P["key"]]
-        if t == 0: self.sums = np.array(c)
-        else: self.sums += c
-    def per_episode(self, ep): 
-        return {f"{self.P['name']}_{c}": r for c, r in enumerate(self.sums)}
