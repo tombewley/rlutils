@@ -111,7 +111,7 @@ class RewardTree:
     def fitness(self, features): 
         # https://www.statlect.com/probability-distributions/normal-distribution-linear-combinations
         n = self.n(features)
-        return n @ self.r, n @ np.diag(self.var) @ n.T
+        return n @ self.r, n @ torch.diag(self.var) @ n.T
 
     def update(self, history_key, ep_nums, ep_lengths, features, A, y, reset_tree=True):
         """

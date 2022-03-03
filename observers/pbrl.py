@@ -44,7 +44,7 @@ class PbrlObserver:
         Load a dataset of episodes and initialise data structures.
         """
         self.episodes = episodes
-        self.Pr = np.full((len(episodes), len(episodes)), np.nan)
+        self.Pr = torch.full((len(episodes), len(episodes)), float("nan"))
         self._current_ep = []
     
     def link(self, agent):
@@ -85,9 +85,10 @@ class PbrlObserver:
         """
         Compute UCB fitness for a sequence of trajectories and sum for all pairs to create a matrix.
         """
-        with torch.no_grad(): mu, var = np.array([self.model.fitness(self.feature_map(tr)) for tr in trajectories]).T
-        F_ucb = mu + self.P["sampler"]["num_std"] * np.sqrt(var)
-        return np.add(F_ucb.reshape(-1,1), F_ucb.reshape(1,-1))
+        with torch.no_grad(): 
+            mu, var = torch.tensor([self.model.fitness(self.feature_map(tr)) for tr in trajectories], device=self.device).T
+        F_ucb = mu + self.P["sampler"]["num_std"] * torch.sqrt(var)
+        return F_ucb.reshape(-1,1) + F_ucb.reshape(1,-1)
 
     def Pr_pred(self, trajectory_i, trajectory_j): 
         """
@@ -119,7 +120,7 @@ class PbrlObserver:
         # Retain episodes for use in reward inference with a specified frequency.
         if self._observing and (ep+1) % self.P["observe_freq"] == 0: 
             self.episodes.append(self._current_ep); n = len(self.episodes)
-            Pr_old = self.Pr; self.Pr = np.full((n, n), np.nan); self.Pr[:-1,:-1] = Pr_old
+            Pr_old = self.Pr; self.Pr = torch.full((n, n), float("nan")); self.Pr[:-1,:-1] = Pr_old
         if self._online:
             if (ep+1) % self.P["feedback_freq"] == 0 and (ep+1) <= self.P["num_episodes_before_freeze"]:    
                 
@@ -153,9 +154,9 @@ class PbrlObserver:
         TODO: Make sampler class in similar way to interface class and use __next__ method to loop through.
         """
         if "ucb" in self.P["sampler"]["weight"]: 
-            w = self.F_ucb_for_pairs(self.episodes) # Only need to compute once per batch.
-            if self.P["sampler"]["weight"] == "ucb_r": w = -w # Invert.
-        elif self.P["sampler"]["weight"] == "uniform": n = len(self.episodes); w = np.zeros((n, n))
+            w = self.F_ucb_for_pairs(self.episodes) # Only need to compute once per batch
+            if self.P["sampler"]["weight"] == "ucb_r": w = -w # Invert
+        elif self.P["sampler"]["weight"] == "uniform": n = len(self.episodes); w = torch.zeros((n, n), device=self.device)
         with self.interface:
             for k in range(batch_size):
                 if ij is None:
@@ -179,34 +180,34 @@ class PbrlObserver:
         if not self.P["sampler"]["constrained"]: raise NotImplementedError()
         n = self.Pr.shape[0]; assert w.shape == (n, n)
         # Enforce non-repeat constraint...
-        not_rated = np.isnan(self.Pr)
+        not_rated = torch.isnan(self.Pr)
         if not_rated.sum() <= n: return False, None, None, None # If have all possible ratings, no more are possible.
-        p = w.copy()
-        rated = np.invert(not_rated)
-        p[rated] = np.nan
+        p = w.clone()
+        rated = ~not_rated
+        p[rated] = float("nan")
         # ...enforce non-identity constraint...
-        np.fill_diagonal(p, np.nan)
+        p.fill_diagonal_(float("nan"))
         # ...enforce connectedness constraint...    
         unconnected = np.argwhere(rated.sum(axis=1) == 0).flatten()
-        if len(unconnected) < n: p[unconnected] = np.nan # (ignore connectedness if first ever rating)
+        if len(unconnected) < n: p[unconnected] = float("nan") # (ignore connectedness if first ever rating)
         # ...enforce recency constraint...
-        p[:ij_min, :ij_min] = np.nan
-        nans = np.isnan(p)
-        if self.P["sampler"]["probabilistic"]: # NOTE: Approach used in AAMAS paper.
+        p[:ij_min, :ij_min] = float("nan")
+        nans = torch.isnan(p)
+        if self.P["sampler"]["probabilistic"]: # NOTE: Approach used in AAMAS paper
             # ...rescale into a probability distribution...
-            p -= np.nanmin(p)
-            sm = np.nansum(p)
-            if sm == 0: p[np.invert(nans)] = 1; p /= np.nansum(p)
+            p -= np.nanmin(p) # NOTE: PyTorch doesn't have nanmin
+            sm = torch.nansum(p)
+            if sm == 0: p[~nans] = 1; p /= torch.nansum(p)
             else: p /= sm
             p[nans] = 0
-            # ...and sample a pair from the distribution.
-            i, j = np.unravel_index(np.random.choice(p.size, p=p.ravel()), p.shape)
+            # ...and sample a pair from the distribution
+            i, j = np.unravel_index(np.random.choice(p.numel(), p=p.ravel().numpy()), p.shape)
         else: 
-            # ...and pick at random from the set of argmax pairs.
+            # ...and pick at random from the set of argmax pairs
             argmaxes = np.argwhere(p == np.nanmax(p))
             i, j = argmaxes[np.random.choice(len(argmaxes))]
-        # Sense check.
-        if len(unconnected) < n: assert np.invert(not_rated[i]).sum() > 0 
+        # Sense check
+        if len(unconnected) < n: assert rated[i].sum() > 0 
         assert i >= ij_min or j >= ij_min 
         return True, i, j, p
 
@@ -436,7 +437,6 @@ def train_val_split(Pr):
     Split rating matrix into training and validation sets, 
     while keeping comparison graph connected for training set.
     """
-    # pairs = [(i, j) for i, j in np.argwhere(np.triu(np.invert(np.isnan(Pr))))]
     return Pr, None
 
 def construct_A_and_y(Pr, device):
@@ -444,7 +444,7 @@ def construct_A_and_y(Pr, device):
     Construct A and y matrices from a matrix of preference probabilities.
     """
     pairs, y, connected = [], [], set()
-    for i, j in np.argwhere(np.logical_not(np.isnan(Pr))):
+    for i, j in np.argwhere(~torch.isnan(Pr)).T: # NOTE: PyTorch v1.10 doesn't have argwhere
         if j < i: pairs.append([i, j]); y.append(Pr[i, j]); connected = connected | {i, j}
     y = torch.tensor(y, device=device).float()
     connected = sorted(list(connected))
