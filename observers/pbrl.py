@@ -18,11 +18,9 @@ class PbrlObserver:
         elif type(features) == list: self.feature_names, self.features = features, None
         self.run_names = run_names if run_names is not None else [] # NOTE: Order crucial to match with episodes
         self.load_episodes(episodes if episodes is not None else [])
-
         self.model = self.P["model"]["kind"](self.device, self.feature_names, self.P["model"]) if "model" in self.P else None
         # self.sampler = TODO:
         self.interface = self.P["interface"]["kind"](self, **self.P["interface"]) if "interface" in self.P else None
-
         self._observing = "observe_freq" in self.P and self.P["observe_freq"] > 0
         self._online = "feedback_budget" in self.P and self.P["feedback_budget"] > 0
         if self._online:
@@ -123,7 +121,6 @@ class PbrlObserver:
             Pr_old = self.Pr; self.Pr = torch.full((n, n), float("nan")); self.Pr[:-1,:-1] = Pr_old
         if self._online:
             if (ep+1) % self.P["feedback_freq"] == 0 and (ep+1) <= self.P["num_episodes_before_freeze"]:    
-                
                 # Calculate batch size.
                 # K = self.P["feedback_budget"] 
                 # B = self._num_batches 
@@ -131,12 +128,10 @@ class PbrlObserver:
                 # c = self.P["scheduling_coef"] 
                 # b = self._batch_num # Current batch number.
                 # batch_size = int(round((K / B * (1 - c)) + (K * (f * (2*(b+1) - 1) - 1) / (B * (B*f - 1)) * c)))
-
                 assert self.P["scheduling_coef"] == 0
                 K = self.P["feedback_budget"] - self._k # Remaining budget
                 B = self._num_batches - self._batch_num # Remaining number of batches
                 batch_size = int(round(K / B))
-
                 # Gather feedback and reward function.
                 self.get_feedback(batch_size=batch_size, ij_min=self._n_on_prev_batch)
                 self._batch_num += 1 
@@ -195,18 +190,17 @@ class PbrlObserver:
         nans = torch.isnan(p)
         if self.P["sampler"]["probabilistic"]: # NOTE: Approach used in AAMAS paper
             # ...rescale into a probability distribution...
-            p -= np.nanmin(p) # NOTE: PyTorch doesn't have nanmin
-            sm = torch.nansum(p)
-            if sm == 0: p[~nans] = 1; p /= torch.nansum(p)
-            else: p /= sm
+            p -= torch.min(p[~nans]) 
+            if torch.nansum(p) == 0: p[~nans] = 1
             p[nans] = 0
             # ...and sample a pair from the distribution
-            i, j = np.unravel_index(np.random.choice(p.numel(), p=p.ravel().numpy()), p.shape)
+            i, j = np.unravel_index(list(torch.utils.data.WeightedRandomSampler(p.ravel(), num_samples=1))[0], p.shape)
         else: 
             # ...and pick at random from the set of argmax pairs
-            argmaxes = np.argwhere(p == np.nanmax(p))
-            i, j = argmaxes[np.random.choice(len(argmaxes))]
-        # Sense check
+            argmaxes = np.argwhere(p == torch.max(p[~nans])).T
+            i, j = argmaxes[np.random.choice(len(argmaxes))]; i, j = i.item(), j.item()
+        # Sense checks
+        assert not_rated[i,j]
         if len(unconnected) < n: assert rated[i].sum() > 0 
         assert i >= ij_min or j >= ij_min 
         return True, i, j, p
