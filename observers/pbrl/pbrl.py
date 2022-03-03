@@ -54,7 +54,7 @@ class PbrlObserver:
         if not agent.memory.lazy_reward: self.relabel_memory = agent.memory.relabel
 
 # ==============================================================================
-# PREDICTION FUNCTIONS
+# PREDICTION METHODS
 
     def feature_map(self, transitions):
         """
@@ -94,54 +94,7 @@ class PbrlObserver:
         raise NotImplementedError()
 
 # ==============================================================================
-# FUNCTIONS FOR EXECUTING THE LEARNING PROCESS
-
-    def per_timestep(self, ep, t, state, action, next_state, reward, done, info, extra):     
-        """
-        Store transition for current timestep.
-        """
-        if "discrete_action_map" in self.P: action = self.P["discrete_action_map"][action] 
-        self._current_ep.append(list(state) + list(action) + list(next_state))
-            
-    def per_episode(self, ep): 
-        """
-        NOTE: To ensure video saving, this is completed *after* env.reset() is called for the next episode.
-        """     
-        self._current_ep = torch.tensor(self._current_ep, device=self.device) # Convert to tensor once appending finished
-        logs = {}
-        # Log reward sums
-        if self.P["reward_source"] == "model": 
-            logs["reward_sum_model"] = self.model.fitness(self.feature_map(self._current_ep))[0] 
-        if self.interface is not None and self.interface.oracle is not None: 
-            logs["reward_sum_oracle"] = sum(self.interface.oracle(self._current_ep))
-        # Retain episodes for use in reward inference with a specified frequency
-        if self._observing and (ep+1) % self.P["observe_freq"] == 0: 
-            self.episodes.append(self._current_ep); n = len(self.episodes)
-            Pr_old = self.Pr; self.Pr = torch.full((n, n), float("nan")); self.Pr[:-1,:-1] = Pr_old
-        if self._online:
-            if (ep+1) % self.P["feedback_freq"] == 0 and (ep+1) <= self.P["num_episodes_before_freeze"]:    
-                # Calculate batch size.
-                # K = self.P["feedback_budget"] 
-                # B = self._num_batches 
-                # f = self.P["feedback_freq"] / self.P["observe_freq"] # Number of episodes between feedback batches.
-                # c = self.P["scheduling_coef"] 
-                # b = self._batch_num # Current batch number.
-                # batch_size = int(round((K / B * (1 - c)) + (K * (f * (2*(b+1) - 1) - 1) / (B * (B*f - 1)) * c)))
-                assert self.P["scheduling_coef"] == 0
-                K = self.P["feedback_budget"] - self._k # Remaining budget
-                B = self._num_batches - self._batch_num # Remaining number of batches
-                batch_size = int(round(K / B))
-                # Gather feedback and update reward function
-                self.get_feedback(batch_size=batch_size, ij_min=self._n_on_prev_batch)
-                self._batch_num += 1 
-                self._n_on_prev_batch = len(self.episodes)
-                self.update(history_key=(ep+1))
-            logs["feedback_count"] = self._k
-            # Periodically log and save out
-            if self._do_logs and (ep+1) % self.P["log_freq"] == 0: log(self, history_key=(ep+1))   
-            if self._do_save and (ep+1) % self.P["save_freq"] == 0: self.save(history_key=(ep+1))
-        self._current_ep = []
-        return logs
+# METHODS FOR EXECUTING THE LEARNING PROCESS
 
     def get_feedback(self, ij=None, batch_size=1, ij_min=0): 
         """
@@ -242,7 +195,60 @@ class PbrlObserver:
         for l, (i, j) in enumerate(pairs): A[l, [connected.index(i), connected.index(j)]] = torch.tensor([1., -1.])
         return A, y, connected
 
-    def relabel_memory(self): pass  
+    def relabel_memory(self): pass
+
+# ==============================================================================
+# METHODS SPECIFIC TO ONLINE LEARNING
+
+    def per_timestep(self, ep, t, state, action, next_state, reward, done, info, extra):     
+        """
+        Store transition for current timestep.
+        """
+        if "discrete_action_map" in self.P: action = self.P["discrete_action_map"][action] 
+        self._current_ep.append(list(state) + list(action) + list(next_state))
+            
+    def per_episode(self, ep): 
+        """
+        NOTE: To ensure video saving, this is completed *after* env.reset() is called for the next episode.
+        """     
+        self._current_ep = torch.tensor(self._current_ep, device=self.device) # Convert to tensor once appending finished
+        logs = {}
+        # Log reward sums
+        if self.P["reward_source"] == "model": 
+            logs["reward_sum_model"] = self.model.fitness(self.feature_map(self._current_ep))[0] 
+        if self.interface is not None and self.interface.oracle is not None: 
+            logs["reward_sum_oracle"] = sum(self.interface.oracle(self._current_ep))
+        # Retain episodes for use in reward inference with a specified frequency
+        if self._observing and (ep+1) % self.P["observe_freq"] == 0: 
+            self.episodes.append(self._current_ep); n = len(self.episodes)
+            Pr_old = self.Pr; self.Pr = torch.full((n, n), float("nan")); self.Pr[:-1,:-1] = Pr_old
+        if self._online:
+            if (ep+1) % self.P["feedback_freq"] == 0 and (ep+1) <= self.P["num_episodes_before_freeze"]:    
+                # Calculate batch size.
+                # K = self.P["feedback_budget"] 
+                # B = self._num_batches 
+                # f = self.P["feedback_freq"] / self.P["observe_freq"] # Number of episodes between feedback batches.
+                # c = self.P["scheduling_coef"] 
+                # b = self._batch_num # Current batch number.
+                # batch_size = int(round((K / B * (1 - c)) + (K * (f * (2*(b+1) - 1) - 1) / (B * (B*f - 1)) * c)))
+                assert self.P["scheduling_coef"] == 0
+                K = self.P["feedback_budget"] - self._k # Remaining budget
+                B = self._num_batches - self._batch_num # Remaining number of batches
+                batch_size = int(round(K / B))
+                # Gather feedback and update reward function
+                self.get_feedback(batch_size=batch_size, ij_min=self._n_on_prev_batch)
+                self._batch_num += 1 
+                self._n_on_prev_batch = len(self.episodes)
+                self.update(history_key=(ep+1))
+            logs["feedback_count"] = self._k
+            # Periodically log and save out
+            if self._do_logs and (ep+1) % self.P["log_freq"] == 0: log(self, history_key=(ep+1))   
+            if self._do_save and (ep+1) % self.P["save_freq"] == 0: self.save(history_key=(ep+1))
+        self._current_ep = []
+        return logs
+
+# ==============================================================================
+# SAVING/LOADING
 
     def save(self, history_key):
         path = f"run_logs/{self.run_names[-1]}"
@@ -251,7 +257,6 @@ class PbrlObserver:
               "Pr": self.Pr,
               "model": self.model
         }, f"{path}/{history_key}.pbrl")
-
 
 def load(fname):
     """
