@@ -297,23 +297,21 @@ class PbrlObserver:
         features = self.feature_map(torch.cat([self.episodes[i] for i in self._connected]))
 
         if self.P["reward_model"] == "net":
-            # norm = torch.distributions.Normal(0, 1)
-            # loss_func = torch.nn.BCELoss()
+            norm = torch.distributions.Normal(0, 1)
+            loss_func = torch.nn.BCELoss()
 
             ep_features = torch.split(features, ep_lengths)
             k_train, n_train = A.shape
             rng = np.random.default_rng()
             for _ in range(self.P["num_batches_per_update"]):
                 batch = rng.choice(k_train, size=min(k_train, self.P["batch_size"]), replace=False)
-                A_batch = torch.tensor(A[batch], device=self.device)
-                y_batch = torch.tensor(y[batch], device=self.device).float()
-                in_batch = np.abs(A[batch]).sum(axis=0) > 0
+                A_batch, y_batch = A[batch], y[batch]
+                in_batch = np.abs(A_batch).sum(axis=0) > 0
                 F_pred, var_pred = torch.zeros(n_train, device=self.device), torch.zeros(n_train, device=self.device)
                 for i in range(n_train):
                     if in_batch[i]: F_pred[i], var_pred[i] = self.fitness(features=ep_features[i])
-                if False: # Thurstone's Case III
+                if True: # Thurstone's Case III
                     # TODO: Try using log_softmax loss for stability
-                    A_batch = A_batch.float()
                     F_diff = A_batch @ F_pred
                     sigma = torch.sqrt(torch.abs(A_batch) @ var_pred)
                     y_pred = norm.cdf(F_diff / sigma)
@@ -325,8 +323,8 @@ class PbrlObserver:
                     # NOTE: Relies on j coming first in the columns of A
                     loss = -(torch.column_stack([1-y_batch, y_batch]) * log_y_pred).sum() / y_batch.shape[0]
 
-                    # y_pred = torch.exp(log_y_pred[:,1])
-                # print(torch.vstack((y_pred, y_batch)).detach().numpy())
+                    y_pred = torch.exp(log_y_pred[:,1])
+                print(torch.vstack((y_pred, y_batch)).detach().numpy())
                 print(loss.item())
 
                 self.net.optimise(loss, retain_graph=False)
