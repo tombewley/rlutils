@@ -10,9 +10,9 @@ class Sampler:
         """
         Precompute weighting matrix for the current batch.
         """
-        self.k = 0
+        self._k = 0
         if self.P["weight"] == "uniform":
-            n = len(self.pbrl.episodes); self.w = torch.zeros((n, n), device=self.device)
+            n = len(self.pbrl.episodes); self.w = torch.zeros((n, n), device=self.pbrl.device)
         else:
             with torch.no_grad(): 
                 mu, var = torch.tensor([self.pbrl.fitness(ep) for ep in self.pbrl.episodes], device=self.pbrl.device).T
@@ -27,8 +27,7 @@ class Sampler:
         """
         Sample a trajectory pair from the current weighting matrix subject to constraints.
         """
-        print(self.k)
-        if self.k >= self.batch_size: return 1, None, None, None # Batch completed
+        if self._k >= self.batch_size: return 1, None, None, None # Batch completed
         n = self.pbrl.Pr.shape[0]; assert self.w.shape == (n, n)
         not_rated = torch.isnan(self.pbrl.Pr)
         if not_rated.sum() <= n: return 2, None, None, None # Fully connected
@@ -59,7 +58,7 @@ class Sampler:
         # Check that all constraints are satisfied
         assert i != j and not_rated[i, j] and (i >= self.ij_min or j >= self.ij_min)
         if len(unconnected) < n: assert rated[i].sum() > 0 
-        self.k += 1
+        self._k += 1
         return 0, i, j, p
 
 

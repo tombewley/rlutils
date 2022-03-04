@@ -23,7 +23,9 @@ class PbrlObserver:
         self.sampler = Sampler(self, self.P["sampler"]) if "sampler" in self.P else None
         self.interface = self.P["interface"]["kind"](self, **self.P["interface"]) if "interface" in self.P else None
         self.logger = Logger(self, self.P["logger"]) if "logger" in self.P else None
+        self._k = 0 # Preference counter
         self._observing = "observe_freq" in self.P and self.P["observe_freq"] > 0
+        self._saving = "save_freq" in self.P and self.P["save_freq"] > 0
         self._online = "feedback_freq" in self.P and self.P["feedback_freq"] > 0
         if self._online:
             assert self.model is not None and self.sampler is not None and self.interface is not None
@@ -33,9 +35,7 @@ class PbrlObserver:
             assert b % 1 == 0
             self._num_batches = int(b)
             self._batch_num = 0
-            self._k = 0
             self._n_on_prev_batch = 0
-            self._do_save = "save_freq" in self.P and self.P["save_freq"] > 0
             
     def load_episodes(self, episodes):
         """
@@ -89,6 +89,7 @@ class PbrlObserver:
         """
         Sample a batch of trajectory pairs and collect preferences via the interface.
         """
+        budget = self.P["feedback_budget"] if "feedback_budget" in self.P else float("inf")
         self.sampler.batch_size, self.sampler.ij_min = batch_size, ij_min
         with self.interface:
             for exit_code, i, j, _ in self.sampler:
@@ -97,7 +98,7 @@ class PbrlObserver:
                     if y_ij == "esc": print("=== Feedback exited ==="); break
                     elif y_ij == "skip": print(f"({i}, {j}) skipped"); continue
                     self.log_preference(i, j, y_ij)
-                    readout = f"{self.sampler.k} / {batch_size} ({self._k} / {self.P['feedback_budget']}): P({i} > {j}) = {y_ij}"
+                    readout = f"{self.sampler._k} / {batch_size} ({self._k} / {budget}): P({i} > {j}) = {y_ij}"
                     print(readout); self.interface.print("\n"+readout)
                 elif exit_code == 1: print("=== Batch complete ==="); break
                 elif exit_code == 2: print("=== Fully connected ==="); break
@@ -162,7 +163,7 @@ class PbrlObserver:
     def per_episode(self, ep): 
         """
         NOTE: To ensure video saving, this is completed *after* env.reset() is called for the next episode.
-        """     
+        """   
         self._current_ep = torch.tensor(self._current_ep, device=self.device) # Convert to tensor once appending finished
         logs = {}
         # Log reward sums
@@ -195,7 +196,7 @@ class PbrlObserver:
             logs["feedback_count"] = self._k
             # Periodically log and save out
             if self.logger is not None and (ep+1) % self.logger.P["freq"] == 0: self.logger(history_key=(ep+1))   
-            if self._do_save and (ep+1) % self.P["save_freq"] == 0: self.save(history_key=(ep+1))
+        if self._saving and (ep+1) % self.P["save_freq"] == 0: self.save(history_key=(ep+1))
         self._current_ep = []
         return logs
 
@@ -203,28 +204,31 @@ class PbrlObserver:
 # SAVING/LOADING
 
     def save(self, history_key):
-        path = f"run_logs/{self.run_names[-1]}"
+        path = f"logs/{self.run_names[-1]}"
         if not os.path.exists(path): os.makedirs(path)
-        dump({"params": self.P,
+        dump({
+              "episodes": self.episodes,
               "Pr": self.Pr,
               "model": self.model
         }, f"{path}/{history_key}.pbrl")
 
-def load(fname):
+def load(fname, P, features):
     """
     Make an instance of PbRLObserver from the information stored by the .save() method.
-    NOTE: pbrl.episodes contains the featurised representation of each transition.
     """
-    raise NotImplementedError("Needs to be adapted for net models")
     dict = load_jl(fname)
-    pbrl = PbrlObserver(dict["params"], features=dict["tree"].space.dim_names[2:])
-    pbrl.Pr, pbrl.model = dict["Pr"], dict["model"]
-    pbrl.compute_r_and_var()
-    A, y, connected = pbrl.construct_A_and_y(pbrl.Pr)
-    ep_fitness_cv = fitness_case_v(A, y, pbrl.P["p_clip"])
-    pbrl.episodes = [None for _ in range(pbrl.Pr.shape[0])]
-    for i, ep in zip(pbrl._connected, hr.group_along_dim(dict["tree"].space, "ep")):
-        assert i == ep[0,0], "pbrl._connected does not match episodes in tree."
-        pbrl.episodes[i] = ep[:,2:] # Remove ep and reward columns
+    pbrl = PbrlObserver(P, features=features, episodes=dict["episodes"])
+    pbrl.Pr = dict["Pr"]
+    if dict["model"] is not None:
+        assert pbrl.model is None, "New/existing model conflict."
+        pbrl.model = dict["model"]
+    # pbrl.compute_r_and_var()
+    # A, y, connected = pbrl.construct_A_and_y(pbrl.Pr)
+    # ep_fitness_cv = fitness_case_v(A, y, pbrl.P["p_clip"])
+    # NOTE: pbrl.episodes contains the featurised representation of each transition.
+    # pbrl.episodes = [None for _ in range(pbrl.Pr.shape[0])]
+    # for i, ep in zip(pbrl._connected, hr.group_along_dim(dict["tree"].space, "ep")):
+    #     assert i == ep[0,0], "pbrl._connected does not match episodes in tree."
+    #     pbrl.episodes[i] = ep[:,2:] # Remove ep and reward columns
     print(f"Loaded {fname}")
     return pbrl
