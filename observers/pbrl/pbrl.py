@@ -141,7 +141,7 @@ class PbrlObserver:
         y = torch.tensor(y, device=self.device).float()
         connected = sorted(list(connected))
         A = torch.zeros((len(pairs), len(connected)), device=self.device)
-        for l, (i, j) in enumerate(pairs): A[l, [connected.index(i), connected.index(j)]] = torch.tensor([1., -1.])
+        for l, (i, j) in enumerate(pairs): A[l, connected.index(i)], A[l, connected.index(j)] = 1, -1
         return A, y, connected
 
     def relabel_memory(self): pass
