@@ -2,7 +2,7 @@ from ._generic import Agent
 from .dqn import DqnAgent # TreeQN inherits from DQN.
 from ..common.networks import TreeNetwork
 from ..common.memory import ReplayMemory
-from rlutils.common.exploration import EpsilonGreedy
+from ..common.exploration import EpsilonGreedy
 
 import torch
 import torch.nn.functional as F
