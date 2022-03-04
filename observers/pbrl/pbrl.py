@@ -1,9 +1,9 @@
 from .sampler import Sampler
-from .logging import log
+from .logger import Logger
 
 import os
-import numpy as np
 import torch
+from numpy import argwhere
 from joblib import load as load_jl, dump
 
 
@@ -18,10 +18,11 @@ class PbrlObserver:
         elif type(features) == list: self.feature_names, self.features = features, None
         self.run_names = run_names if run_names is not None else [] # NOTE: Order crucial to match with episodes
         self.load_episodes(episodes if episodes is not None else [])
-        # Reward model, trajectory pair sampler and preference collection interface are all modular
+        # Reward model, trajectory pair sampler, preference collection interface and logger are all modular
         self.model = self.P["model"]["kind"](self.device, self.feature_names, self.P["model"]) if "model" in self.P else None
         self.sampler = Sampler(self, self.P["sampler"]) if "sampler" in self.P else None
         self.interface = self.P["interface"]["kind"](self, **self.P["interface"]) if "interface" in self.P else None
+        self.logger = Logger(self, self.P["logger"]) if "logger" in self.P else None
         self._observing = "observe_freq" in self.P and self.P["observe_freq"] > 0
         self._online = "feedback_freq" in self.P and self.P["feedback_freq"] > 0
         if self._online:
@@ -34,7 +35,6 @@ class PbrlObserver:
             self._batch_num = 0
             self._k = 0
             self._n_on_prev_batch = 0
-            self._do_logs = "log_freq" in self.P and self.P["log_freq"] > 0
             self._do_save = "save_freq" in self.P and self.P["save_freq"] > 0
             
     def load_episodes(self, episodes):
@@ -64,7 +64,7 @@ class PbrlObserver:
         if self.features is None: return transitions
         return torch.cat([self.features[f](transitions).reshape(-1,1) for f in self.feature_names], dim=1)
 
-    def reward(self, states, actions=None, next_states=None, transitions=None, features=None, return_params=False):
+    def reward(self, states, actions=None, next_states=None, transitions=None, return_params=False):
         """
         Reward function, defined over individual transitions (s,a,s').
         """
@@ -79,6 +79,9 @@ class PbrlObserver:
         if "rune_coef" in self.P: return mu + self.P["rune_coef"] * std
         else: return mu
 
+    def fitness(self, trajectory):
+        return self.model.fitness(self.feature_map(trajectory))
+
 # ==============================================================================
 # METHODS FOR EXECUTING THE LEARNING PROCESS
 
@@ -87,7 +90,7 @@ class PbrlObserver:
         Sample a batch of trajectory pairs and collect preferences via the interface.
         """
         self.sampler.batch_size, self.sampler.ij_min = batch_size, ij_min
-        with self.sampler, self.interface:
+        with self.interface:
             for exit_code, i, j, _ in self.sampler:
                 if exit_code == 0:
                     y_ij = self.interface(i, j)
@@ -113,14 +116,14 @@ class PbrlObserver:
         # Split into training and validation sets
         Pr_train, Pr_val = self.train_val_split()
         # Assemble data structures needed for learning
-        A, y, self._connected = self.construct_A_and_y(Pr_train)
-        print(f"Connected episodes: {len(self._connected)} / {len(self.episodes)}")
-        if len(self._connected) == 0: print("=== None connected ==="); return
-        ep_lengths = [len(self.episodes[i]) for i in self._connected]
+        A, y, connected = self.construct_A_and_y(Pr_train)
+        print(f"Connected episodes: {len(connected)} / {len(self.episodes)}")
+        if len(connected) == 0: print("=== None connected ==="); return
+        ep_lengths = [len(self.episodes[i]) for i in connected]
         # Apply feature mapping to all episodes that are connected to the training set comparison graph
-        features = self.feature_map(torch.cat([self.episodes[i] for i in self._connected]))
+        features = self.feature_map(torch.cat([self.episodes[i] for i in connected]))
         # Update the reward function using connected episodes
-        self.model.update(history_key, self._connected, ep_lengths, features, A, y)        
+        self.model.update(history_key, connected, ep_lengths, features, A, y)        
         # If applicable, relabel the agent's replay memory using the updated reward function
         self.relabel_memory()  
 
@@ -136,7 +139,7 @@ class PbrlObserver:
         Construct A and y matrices from a matrix of preference probabilities.
         """
         pairs, y, connected = [], [], set()
-        for i, j in np.argwhere(~torch.isnan(Pr)).T: # NOTE: PyTorch v1.10 doesn't have argwhere
+        for i, j in argwhere(~torch.isnan(Pr)).T: # NOTE: PyTorch v1.10 doesn't have argwhere
             if j < i: pairs.append([i, j]); y.append(Pr[i, j]); connected = connected | {i.item(), j.item()}
         y = torch.tensor(y, device=self.device).float()
         connected = sorted(list(connected))
@@ -164,7 +167,7 @@ class PbrlObserver:
         logs = {}
         # Log reward sums
         if self.P["reward_source"] == "model": 
-            logs["reward_sum_model"] = self.model.fitness(self.feature_map(self._current_ep))[0] 
+            logs["reward_sum_model"], _ = self.fitness(self._current_ep)
         if self.interface is not None and self.interface.oracle is not None: 
             logs["reward_sum_oracle"] = sum(self.interface.oracle(self._current_ep))
         # Retain episodes for use in reward inference with a specified frequency
@@ -191,7 +194,7 @@ class PbrlObserver:
                 self.update(history_key=(ep+1))
             logs["feedback_count"] = self._k
             # Periodically log and save out
-            if self._do_logs and (ep+1) % self.P["log_freq"] == 0: log(self, history_key=(ep+1))   
+            if self.logger is not None and (ep+1) % self.logger.P["freq"] == 0: self.logger(history_key=(ep+1))   
             if self._do_save and (ep+1) % self.P["save_freq"] == 0: self.save(history_key=(ep+1))
         self._current_ep = []
         return logs
@@ -217,8 +220,8 @@ def load(fname):
     pbrl = PbrlObserver(dict["params"], features=dict["tree"].space.dim_names[2:])
     pbrl.Pr, pbrl.model = dict["Pr"], dict["model"]
     pbrl.compute_r_and_var()
-    A, y, pbrl._connected = pbrl.construct_A_and_y(pbrl.Pr)
-    pbrl._ep_fitness_cv = fitness_case_v(A, y, pbrl.P["p_clip"])
+    A, y, connected = pbrl.construct_A_and_y(pbrl.Pr)
+    ep_fitness_cv = fitness_case_v(A, y, pbrl.P["p_clip"])
     pbrl.episodes = [None for _ in range(pbrl.Pr.shape[0])]
     for i, ep in zip(pbrl._connected, hr.group_along_dim(dict["tree"].space, "ep")):
         assert i == ep[0,0], "pbrl._connected does not match episodes in tree."

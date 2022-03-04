@@ -88,7 +88,7 @@ class RewardTree:
     def __init__(self, device, feature_names, P):
         # === Lazy import ===
         import hyperrectangles as hr
-        self.hr_rules = hr.rules
+        self.rules, self.diagram, self.rectangles = hr.rules, hr.diagram, hr.show_rectangles
         # ===================
         self.device = device
         self.P = P
@@ -122,11 +122,9 @@ class RewardTree:
         """
         If reset_tree=True, tree is first pruned back to its root (i.e. start from scratch).
         """
-        # Compute fitness estimates for connected episodes
-        self._ep_fitness_cv = fitness_case_v(A, y, self.P["p_clip"])
-        # Uniform temporal prior
+        # Compute fitness estimates for connected episodes, and apply uniform temporal prior to obtain reward targets
         # NOTE: scaling by episode lengths (making ep fitness correspond to sum not mean) causes weird behaviour
-        reward_target = self._ep_fitness_cv # * np.mean(ep_lengths) / ep_lengths
+        reward_target = fitness_case_v(A, y, self.P["p_clip"]) # * np.mean(ep_lengths) / ep_lengths
         # Populate tree. 
         self.tree.space.data = np.hstack((
             np.vstack([np.array([[i, r]] * l) for (i, r, l) in zip(ep_nums, reward_target, ep_lengths)]), # Episode number and reward target
@@ -180,7 +178,7 @@ class RewardTree:
         self.history[history_key] = {"split": history_split, "merge": history_merge, "m": self.m}
         print(self.tree.space)
         print(self.tree)
-        print(self.hr_rules(self.tree, pred_dims="reward", sf=5))#, out_name="tree_func"))
+        print(self.rules(self.tree, pred_dims="reward", sf=5))#, out_name="tree_func"))
 
     def features_to_indices(self, features):
         return [self.tree.leaves.index(next(iter(
