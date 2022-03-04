@@ -8,6 +8,9 @@ from scipy.special import xlogy, xlog1py
 from tqdm import tqdm
 
 
+# TODO: Generic model for others to inherit from
+
+
 class RewardNet:
     def __init__(self, device, feature_names, P):
         self.device = device
@@ -62,9 +65,9 @@ class RewardNet:
                 # NOTE: Relies on j coming first in the columns of A
                 loss = -(torch.column_stack([1-y_batch, y_batch]) * log_y_pred).sum() / y_batch.shape[0]
 
-                y_pred = torch.exp(log_y_pred[:,1])
-            print(torch.vstack((y_pred, y_batch)).detach().numpy())
-            print(loss.item())
+                # y_pred = torch.exp(log_y_pred[:,1])
+            # print(torch.vstack((y_pred, y_batch)).detach().numpy())
+            # print(loss.item())
 
             self.net.optimise(loss, retain_graph=False)
 

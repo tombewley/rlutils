@@ -1,8 +1,9 @@
+from .sampler import Sampler
 from .logging import log
 
 import os
-import torch
 import numpy as np
+import torch
 from joblib import load as load_jl, dump
 
 
@@ -17,14 +18,14 @@ class PbrlObserver:
         elif type(features) == list: self.feature_names, self.features = features, None
         self.run_names = run_names if run_names is not None else [] # NOTE: Order crucial to match with episodes
         self.load_episodes(episodes if episodes is not None else [])
+        # Reward model, trajectory pair sampler and preference collection interface are all modular
         self.model = self.P["model"]["kind"](self.device, self.feature_names, self.P["model"]) if "model" in self.P else None
-        # self.sampler = TODO:
+        self.sampler = Sampler(self, self.P["sampler"]) if "sampler" in self.P else None
         self.interface = self.P["interface"]["kind"](self, **self.P["interface"]) if "interface" in self.P else None
         self._observing = "observe_freq" in self.P and self.P["observe_freq"] > 0
-        self._online = "feedback_budget" in self.P and self.P["feedback_budget"] > 0
+        self._online = "feedback_freq" in self.P and self.P["feedback_freq"] > 0
         if self._online:
-            # TODO: More assertions here
-            assert self.interface is not None
+            assert self.model is not None and self.sampler is not None and self.interface is not None
             assert self._observing
             assert self.P["feedback_freq"] % self.P["observe_freq"] == 0    
             b = self.P["num_episodes_before_freeze"] / self.P["feedback_freq"]
@@ -33,8 +34,8 @@ class PbrlObserver:
             self._batch_num = 0
             self._k = 0
             self._n_on_prev_batch = 0
-            self._do_save = "save_freq" in self.P and self.P["save_freq"] > 0
             self._do_logs = "log_freq" in self.P and self.P["log_freq"] > 0
+            self._do_save = "save_freq" in self.P and self.P["save_freq"] > 0
             
     def load_episodes(self, episodes):
         """
@@ -78,88 +79,36 @@ class PbrlObserver:
         if "rune_coef" in self.P: return mu + self.P["rune_coef"] * std
         else: return mu
 
-    def F_ucb_for_pairs(self, trajectories):
-        """
-        Compute UCB fitness for a sequence of trajectories and sum for all pairs to create a matrix.
-        """
-        with torch.no_grad(): 
-            mu, var = torch.tensor([self.model.fitness(self.feature_map(tr)) for tr in trajectories], device=self.device).T
-        F_ucb = mu + self.P["sampler"]["num_std"] * torch.sqrt(var)
-        return F_ucb.reshape(-1,1) + F_ucb.reshape(1,-1)
-
-    def Pr_pred(self, trajectory_i, trajectory_j): 
-        """
-        Predicted probability of trajectory i being preferred to trajectory j.
-        """
-        raise NotImplementedError()
-
 # ==============================================================================
 # METHODS FOR EXECUTING THE LEARNING PROCESS
 
-    def get_feedback(self, ij=None, batch_size=1, ij_min=0): 
+    def preference_batch(self, batch_size=1, ij_min=0): 
         """
-        TODO: Make sampler class in similar way to interface class and use __next__ method to loop through.
+        Sample a batch of trajectory pairs and collect preferences via the interface.
         """
-        if "ucb" in self.P["sampler"]["weight"]: 
-            w = self.F_ucb_for_pairs(self.episodes) # Only need to compute once per batch
-            if self.P["sampler"]["weight"] == "ucb_r": w = -w # Invert
-        elif self.P["sampler"]["weight"] == "uniform": n = len(self.episodes); w = torch.zeros((n, n), device=self.device)
-        with self.interface:
-            for k in range(batch_size):
-                if ij is None:
-                    found, i, j, _ = self.select_i_j(w, ij_min=ij_min)
-                    if not found: print("=== Fully connected ==="); break
-                else: assert batch_size == 1; i, j = ij # Force specified i, j.
-                y_ij = self.interface(i, j)
-                if y_ij == "esc": print("=== Feedback exited ==="); break
-                elif y_ij == "skip": print(f"({i}, {j}) skipped"); continue
-                assert 0 <= y_ij <= 1
-                self.Pr[i, j] = y_ij
-                self.Pr[j, i] = 1 - y_ij
-                self._k += 1
-                readout = f"{k+1} / {batch_size} ({self._k} / {self.P['feedback_budget']}): P({i} > {j}) = {y_ij}"
-                print(readout); self.interface.print("\n"+readout)
+        self.sampler.batch_size, self.sampler.ij_min = batch_size, ij_min
+        with self.sampler, self.interface:
+            for exit_code, i, j, _ in self.sampler:
+                if exit_code == 0:
+                    y_ij = self.interface(i, j)
+                    if y_ij == "esc": print("=== Feedback exited ==="); break
+                    elif y_ij == "skip": print(f"({i}, {j}) skipped"); continue
+                    self.log_preference(i, j, y_ij)
+                    readout = f"{self.sampler.k} / {batch_size} ({self._k} / {self.P['feedback_budget']}): P({i} > {j}) = {y_ij}"
+                    print(readout); self.interface.print("\n"+readout)
+                elif exit_code == 1: print("=== Batch complete ==="); break
+                elif exit_code == 2: print("=== Fully connected ==="); break
 
-    def select_i_j(self, w, ij_min=0):
-        """
-        Sample a trajectory pair from a weighting matrix subject to constraints.
-        """
-        if not self.P["sampler"]["constrained"]: raise NotImplementedError()
-        n = self.Pr.shape[0]; assert w.shape == (n, n)
-        # Enforce non-repeat constraint...
-        not_rated = torch.isnan(self.Pr)
-        if not_rated.sum() <= n: return False, None, None, None # If have all possible ratings, no more are possible.
-        p = w.clone()
-        rated = ~not_rated
-        p[rated] = float("nan")
-        # ...enforce non-identity constraint...
-        p.fill_diagonal_(float("nan"))
-        # ...enforce connectedness constraint...    
-        unconnected = np.argwhere(rated.sum(axis=1) == 0).flatten()
-        if len(unconnected) < n: p[unconnected] = float("nan") # (ignore connectedness if first ever rating)
-        # ...enforce recency constraint...
-        p[:ij_min, :ij_min] = float("nan")
-        nans = torch.isnan(p)
-        if self.P["sampler"]["probabilistic"]: # NOTE: Approach used in AAMAS paper
-            # ...rescale into a probability distribution...
-            p -= torch.min(p[~nans]) 
-            if torch.nansum(p) == 0: p[~nans] = 1
-            p[nans] = 0
-            # ...and sample a pair from the distribution
-            i, j = np.unravel_index(list(torch.utils.data.WeightedRandomSampler(p.ravel(), num_samples=1))[0], p.shape)
-        else: 
-            # ...and pick at random from the set of argmax pairs
-            argmaxes = np.argwhere(p == torch.max(p[~nans])).T
-            i, j = argmaxes[np.random.choice(len(argmaxes))]; i, j = i.item(), j.item()
-        # Sense checks
-        assert not_rated[i,j]
-        if len(unconnected) < n: assert rated[i].sum() > 0 
-        assert i >= ij_min or j >= ij_min 
-        return True, i, j, p
+    def log_preference(self, i, j, y_ij):
+        assert torch.isnan(self.Pr[i, j]) and torch.isnan(self.Pr[j, i]), f"Already have preference for ({i}, {j})"
+        assert 0 <= y_ij <= 1
+        self.Pr[i, j] = y_ij
+        self.Pr[j, i] = 1 - y_ij
+        self._k += 1
 
     def update(self, history_key):
         """
-        Update the reward function to reflect the current feedback dataset.
+        Update the reward function to reflect the current preference dataset.
         """
         # Split into training and validation sets
         Pr_train, Pr_val = self.train_val_split()
@@ -188,7 +137,7 @@ class PbrlObserver:
         """
         pairs, y, connected = [], [], set()
         for i, j in np.argwhere(~torch.isnan(Pr)).T: # NOTE: PyTorch v1.10 doesn't have argwhere
-            if j < i: pairs.append([i, j]); y.append(Pr[i, j]); connected = connected | {i, j}
+            if j < i: pairs.append([i, j]); y.append(Pr[i, j]); connected = connected | {i.item(), j.item()}
         y = torch.tensor(y, device=self.device).float()
         connected = sorted(list(connected))
         A = torch.zeros((len(pairs), len(connected)), device=self.device)
@@ -227,7 +176,7 @@ class PbrlObserver:
                 # Calculate batch size.
                 # K = self.P["feedback_budget"] 
                 # B = self._num_batches 
-                # f = self.P["feedback_freq"] / self.P["observe_freq"] # Number of episodes between feedback batches.
+                # f = self.P["feedback_freq"] / self.P["observe_freq"] # Number of episodes between batches
                 # c = self.P["scheduling_coef"] 
                 # b = self._batch_num # Current batch number.
                 # batch_size = int(round((K / B * (1 - c)) + (K * (f * (2*(b+1) - 1) - 1) / (B * (B*f - 1)) * c)))
@@ -235,8 +184,8 @@ class PbrlObserver:
                 K = self.P["feedback_budget"] - self._k # Remaining budget
                 B = self._num_batches - self._batch_num # Remaining number of batches
                 batch_size = int(round(K / B))
-                # Gather feedback and update reward function
-                self.get_feedback(batch_size=batch_size, ij_min=self._n_on_prev_batch)
+                # Gather preferences and update reward function
+                self.preference_batch(batch_size=batch_size, ij_min=self._n_on_prev_batch)
                 self._batch_num += 1 
                 self._n_on_prev_batch = len(self.episodes)
                 self.update(history_key=(ep+1))
