@@ -49,18 +49,19 @@ class RewardNet:
         for _ in range(self.P["num_batches_per_update"]):
             batch = rng.choice(k_train, size=min(k_train, self.P["batch_size"]), replace=False)
             A_batch, y_batch = A[batch], y[batch]
-            in_batch = np.abs(A_batch).sum(axis=0) > 0
+            abs_A_batch = torch.abs(A_batch)
+            in_batch = abs_A_batch.sum(axis=0) > 0
             F_pred, var_pred = torch.zeros(n_train, device=self.device), torch.zeros(n_train, device=self.device)
             for i in range(n_train):
                 if in_batch[i]: F_pred[i], var_pred[i] = self.fitness(features=ep_features[i])
             if self.P["preference_eqn"] == "thurstone": 
                 F_diff = A_batch @ F_pred
-                sigma = torch.sqrt(torch.abs(A_batch) @ var_pred)
+                sigma = torch.sqrt(abs_A_batch @ var_pred)
                 y_pred = norm.cdf(F_diff / sigma)
                 loss = loss_func(y_pred, y_batch) # Binary cross-entropy loss, PEBBLE equation 4
             elif self.P["preference_eqn"] == "bradley-terry": 
                 # https://github.com/rll-research/BPref/blob/f3ece2ecf04b5d11b276d9bbb19b8004c29429d1/reward_model.py#L142
-                F_pairs = torch.vstack([F_pred[pair] for pair in torch.abs(A_batch).bool()])
+                F_pairs = torch.vstack([F_pred[pair] for pair in abs_A_batch.bool()])
                 log_y_pred = torch.nn.functional.log_softmax(F_pairs, dim=1)
                 # NOTE: Relies on j coming first in the columns of A
                 loss = -(torch.column_stack([1-y_batch, y_batch]) * log_y_pred).sum() / y_batch.shape[0]
@@ -201,7 +202,7 @@ def fitness_case_v(A, y, p_clip):
     Construct fitness estimates under Thurstone's Case V model. 
     Uses Morrissey-Gulliksen least squares for incomplete comparison matrix.
     """
-    d = norm.ppf(np.clip(y, p_clip, 1-p_clip)) # Clip to prevent infinite values
+    d = norm.ppf(torch.clamp(y, p_clip, 1-p_clip)) # Clip to prevent infinite values
     f, _, _, _ = np.linalg.lstsq(A.T @ A, A.T @ d, rcond=None)
     return f - f.max() # NOTE: Shift so that maximum fitness is zero (cost function)
 
@@ -216,8 +217,8 @@ def labelling_loss(A, y, N, r, var, p_clip, old=False):
     sigma[torch.logical_and(F_diff == 0, sigma == 0)] = 1 # Handle 0/0 case
     y_pred = norm.cdf(F_diff / sigma) # Div/0 is fine
     if old:
-        d = norm.ppf(np.clip(y, p_clip, 1-p_clip)) 
-        d_pred = norm.ppf(np.clip(y_pred, p_clip, 1-p_clip)) 
+        d = norm.ppf(torch.clamp(y, p_clip, 1-p_clip)) 
+        d_pred = norm.ppf(torch.clamp(y_pred, p_clip, 1-p_clip)) 
         assert not np.isnan(d_pred).any()
         return ((d_pred - d)**2).mean() # MSE loss
     else:
