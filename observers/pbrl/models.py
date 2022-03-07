@@ -3,14 +3,13 @@ from ...common.utils import reparameterise
 
 import torch
 import numpy as np
-from scipy.stats import norm
 from scipy.special import xlogy, xlog1py
 from tqdm import tqdm
 
 
+norm = torch.distributions.Normal(0, 1)
+
 # TODO: Generic model for others to inherit from
-
-
 class RewardNet:
     def __init__(self, device, feature_names, P):
         self.device = device
@@ -40,7 +39,6 @@ class RewardNet:
         return mu.sum(), var.sum()
 
     def update(self, history_key, ep_nums, ep_lengths, features, A, y):
-        norm = torch.distributions.Normal(0, 1)
         loss_func = torch.nn.BCELoss()
 
         ep_features = torch.split(features, ep_lengths)
@@ -202,8 +200,8 @@ def fitness_case_v(A, y, p_clip):
     Construct fitness estimates under Thurstone's Case V model. 
     Uses Morrissey-Gulliksen least squares for incomplete comparison matrix.
     """
-    d = norm.ppf(torch.clamp(y, p_clip, 1-p_clip)) # Clip to prevent infinite values
-    f, _, _, _ = np.linalg.lstsq(A.T @ A, A.T @ d, rcond=None)
+    d = norm.icdf(torch.clamp(y, p_clip, 1-p_clip)) # Clip to prevent infinite values
+    f, _, _, _ = torch.linalg.lstsq(A.T @ A, A.T @ d, rcond=None)
     return f - f.max() # NOTE: Shift so that maximum fitness is zero (cost function)
 
 def labelling_loss(A, y, N, r, var, p_clip, old=False):
