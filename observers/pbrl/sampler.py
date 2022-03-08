@@ -3,6 +3,9 @@ from numpy import unravel_index, argwhere
 from numpy.random import choice
 
 
+norm = torch.distributions.Normal(0, 1)
+
+
 class Sampler:
     def __init__(self, pbrl, P): self.pbrl, self.P = pbrl, P
 
@@ -19,8 +22,8 @@ class Sampler:
             if "ucb" in self.P["weight"]:
                 self.w = ucb_sum(mu, var, num_std=self.P["num_std"])
                 if self.P["weight"] == "ucb_r": self.w = -self.w # Invert
-            elif self.P["weight"] == "uncertainty": 
-                raise NotImplementedError()
+            elif self.P["weight"] == "entropy": 
+                self.w = preference_entropy(mu, var, preference_eqn=self.P["preference_eqn"])
         return self
 
     def __next__(self):
@@ -32,17 +35,17 @@ class Sampler:
         not_rated = torch.isnan(self.pbrl.Pr)
         if not_rated.sum() <= n: return 2, None, None, None # Fully connected
         p = self.w.clone()
-        if not self.P["constrained"]: raise NotImplementedError()
         # Enforce non-identity constraint...
         p.fill_diagonal_(float("nan"))
         # ...enforce non-repeat constraint...
         rated = ~not_rated
         p[rated] = float("nan")
-        # ...enforce connectedness constraint...    
-        unconnected = argwhere(rated.sum(axis=1) == 0).flatten()
-        if len(unconnected) < n: p[unconnected] = float("nan") # (ignore connectedness if first ever rating)
-        # ...enforce recency constraint...
-        p[:self.ij_min, :self.ij_min] = float("nan")
+        if self.P["constrained"]:
+            # ...enforce connectedness constraint...    
+            unconnected = argwhere(rated.sum(axis=1) == 0).flatten()
+            if len(unconnected) < n: p[unconnected] = float("nan") # (ignore connectedness if first ever rating)
+            # ...enforce recency constraint...
+            p[:self.ij_min, :self.ij_min] = float("nan")
         nans = torch.isnan(p)
         if self.P["probabilistic"]: # NOTE: Approach used in AAMAS paper
             # ...rescale into a probability distribution...
@@ -56,8 +59,10 @@ class Sampler:
             argmaxes = argwhere(p == torch.max(p[~nans])).T
             i, j = argmaxes[choice(len(argmaxes))]; i, j = i.item(), j.item()
         # Check that all constraints are satisfied
-        assert i != j and not_rated[i, j] and (i >= self.ij_min or j >= self.ij_min)
-        if len(unconnected) < n: assert rated[i].sum() > 0 
+        assert i != j and not_rated[i, j]
+        if self.P["constrained"]:
+            if len(unconnected) < n: assert rated[i].sum() > 0 
+            assert i >= self.ij_min or j >= self.ij_min
         self._k += 1
         return 0, i, j, p
 
@@ -65,3 +70,14 @@ class Sampler:
 def ucb_sum(mu, var, num_std):
     ucb = mu + num_std * torch.sqrt(var)
     return ucb.reshape(-1,1) + ucb.reshape(1,-1)
+
+def preference_entropy(mu, var, preference_eqn): # TODO: Redundancy with models.py
+    F_diff = mu.reshape(-1,1) - mu.reshape(1,-1)
+    if preference_eqn == "thurstone": 
+        sigma = torch.sqrt(var.reshape(-1,1) + var.reshape(1,-1))
+        sigma[torch.logical_and(F_diff == 0, sigma == 0)] = 1 # Handle 0/0 case
+        y_pred = norm.cdf(F_diff / sigma)
+    elif preference_eqn == "bradley-terry": 
+        raise NotImplementedError()
+    y_log_y = torch.nan_to_num(y_pred * torch.log(y_pred), 0)
+    return -(y_log_y + y_log_y.T)
