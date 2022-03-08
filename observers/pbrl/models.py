@@ -8,6 +8,8 @@ from tqdm import tqdm
 
 
 norm = torch.distributions.Normal(0, 1)
+bce_loss = torch.nn.BCELoss()
+
 
 # TODO: Generic model for others to inherit from
 class RewardNet:
@@ -39,8 +41,6 @@ class RewardNet:
         return mu.sum(), var.sum()
 
     def update(self, history_key, ep_nums, ep_lengths, features, A, y):
-        loss_func = torch.nn.BCELoss()
-
         ep_features = torch.split(features, ep_lengths)
         k_train, n_train = A.shape
         rng = np.random.default_rng()
@@ -56,7 +56,7 @@ class RewardNet:
                 F_diff = A_batch @ F_pred
                 sigma = torch.sqrt(abs_A_batch @ var_pred)
                 y_pred = norm.cdf(F_diff / sigma)
-                loss = loss_func(y_pred, y_batch) # Binary cross-entropy loss, PEBBLE equation 4
+                loss = bce_loss(y_pred, y_batch) # Binary cross-entropy loss, PEBBLE equation 4
             elif self.P["preference_eqn"] == "bradley-terry": 
                 # https://github.com/rll-research/BPref/blob/f3ece2ecf04b5d11b276d9bbb19b8004c29429d1/reward_model.py#L142
                 F_pairs = torch.vstack([F_pred[pair] for pair in abs_A_batch.bool()])
@@ -220,9 +220,7 @@ def labelling_loss(A, y, N, r, var, p_clip, old=False):
         assert not np.isnan(d_pred).any()
         return ((d_pred - d)**2).mean() # MSE loss
     else:
-        # Robust cross-entropy loss (https://stackoverflow.com/a/50024648)
-        loss = (-(xlogy(y, y_pred) + xlog1py(1 - y, -y_pred))).mean()
-        return loss
+        return bce_loss(y_pred, y) # BCE loss
 
 def split_merge_cancel(split, merge):
     raise NotImplementedError("Still doesn't work")
