@@ -1,6 +1,7 @@
 from ..agents._default_hyperparameters import default_hyperparameters
 
-from torch import load as torch_load
+from torch import device, load as torch_load
+from torch.cuda import is_available
 
 
 def make(agent, env, hyperparameters=dict()):
@@ -30,4 +31,9 @@ def make(agent, env, hyperparameters=dict()):
     elif agent == "treeqn":             from ..agents.treeqn import TreeqnAgent as agent_class
     return agent_class(env, P)
 
-def load(path, env): agent = torch_load(path); agent.env = env; return agent
+def load(path, env): 
+    _device = device("cuda" if is_available() else "cpu")
+    agent = torch_load(path, map_location=_device)
+    agent.device = _device
+    agent.env = env
+    return agent
