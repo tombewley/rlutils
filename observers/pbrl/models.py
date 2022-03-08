@@ -159,10 +159,10 @@ class RewardTree:
                 # Perform prune.
                 parent_num, pruned_nums = self.tree.prune_mccp()
                 pbar.update(-1)
-                # Efficiently update N array.
+                # Efficiently update N array (NOTE: relies on pruned_nums being consecutive and ordered)
                 assert pruned_nums[-1] == pruned_nums[0] + len(pruned_nums)-1
                 N[:,pruned_nums[0]] = N[:,pruned_nums].sum(axis=1)
-                N = np.delete(N, pruned_nums[1:], axis=1)
+                N = torch.cat((N[:,:pruned_nums[1]], N[:,pruned_nums[-1]+1:]), axis=1)
                 if False: assert (N == torch.vstack([self.n(f) for f in ep_features])).all() # Sense check.     
         # Now prune to minimum-loss size.
         # NOTE: Size regularisation applied here; use reversed list to ensure *last* occurrence returned.
