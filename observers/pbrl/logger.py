@@ -3,7 +3,6 @@ import numpy as np
 from scipy.stats import norm
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
-import networkx as nx
 
 
 class Logger:
@@ -141,6 +140,7 @@ class Logger:
             ax2.yaxis.label.set_color("b")
 
     def plot_comparison_graph(self, figsize=(12, 12)):
+        import networkx as nx # NOTE: Lazy import
         # Graph creation.
         self.graph = nx.DiGraph()
         n = len(self.episodes)
