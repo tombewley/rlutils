@@ -123,14 +123,11 @@ class RewardTree:
         """
         # Compute fitness estimates for connected episodes, and apply uniform temporal prior to obtain reward targets
         # NOTE: scaling by episode lengths (making ep fitness correspond to sum not mean) causes weird behaviour
-        reward_target = fitness_case_v(A, y, self.P["p_clip"]).cpu().numpy() # * np.mean(ep_lengths) / ep_lengths
+        reward_target = fitness_case_v(A, y, self.P["p_clip"]) # * np.mean(ep_lengths) / ep_lengths
         # Populate tree. 
-        print(ep_nums, type(ep_nums))
-        print(reward_target, type(reward_target))
-        print(ep_lengths, type(ep_lengths))
         self.tree.space.data = np.hstack((
-            np.vstack([[[i, r]] * l for (i, r, l) in zip(ep_nums, reward_target, ep_lengths)]),
-            features                             
+            np.vstack([[[i, r]] * l for (i, r, l) in zip(ep_nums, reward_target.cpu().numpy(), ep_lengths)]),
+            features.cpu().numpy()                             
             ))
         if reset_tree: self.tree.prune_to(self.tree.root) 
         self.tree.populate()
