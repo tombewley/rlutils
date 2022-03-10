@@ -114,34 +114,25 @@ class PbrlObserver:
         """
         Update the reward function to reflect the current preference dataset.
         """
-        # Split into training and validation sets
-        Pr_train, Pr_val = self.train_val_split()
         # Assemble data structures needed for learning
-        A, y, connected = self.construct_A_and_y(Pr_train)
+        A, y, connected = self.construct_A_and_y()
         print(f"Connected episodes: {len(connected)} / {len(self.episodes)}")
         if len(connected) == 0: print("=== None connected ==="); return
         ep_lengths = [len(self.episodes[i]) for i in connected]
-        # Apply feature mapping to all episodes that are connected to the training set comparison graph
+        # Apply feature mapping to all episodes that are connected to the preference graph
         features = self.feature_map(torch.cat([self.episodes[i] for i in connected]))
         # Update the reward function using connected episodes
         self.model.update(history_key, connected, ep_lengths, features, A, y)        
         # If applicable, relabel the agent's replay memory using the updated reward function
         self.relabel_memory()  
 
-    def train_val_split(self):
+    def construct_A_and_y(self):
         """
-        Split rating matrix into training and validation sets, 
-        while keeping comparison graph connected for training set.
-        """
-        return self.Pr, None
-
-    def construct_A_and_y(self, Pr):
-        """
-        Construct A and y matrices from a matrix of preference probabilities.
+        Construct A and y matrices from the matrix of preference probabilities.
         """
         pairs, y, connected = [], [], set()
-        for i, j in argwhere(~torch.isnan(Pr)).T: # NOTE: PyTorch v1.10 doesn't have argwhere
-            if j < i: pairs.append([i, j]); y.append(Pr[i, j]); connected = connected | {i.item(), j.item()}
+        for i, j in argwhere(~torch.isnan(self.Pr)).T: # NOTE: PyTorch v1.10 doesn't have argwhere
+            if j < i: pairs.append([i, j]); y.append(self.Pr[i, j]); connected = connected | {i.item(), j.item()}
         y = torch.tensor(y, device=self.device).float()
         connected = sorted(list(connected))
         A = torch.zeros((len(pairs), len(connected)), device=self.device)
