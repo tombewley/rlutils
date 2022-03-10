@@ -115,14 +115,14 @@ class PbrlObserver:
         Update the reward function to reflect the current preference dataset.
         """
         # Assemble data structures needed for learning
-        A, y, connected = self.construct_A_and_y()
+        A, y, i_list, j_list, connected = self.construct_A_and_y()
         print(f"Connected episodes: {len(connected)} / {len(self.episodes)}")
         if len(connected) == 0: print("=== None connected ==="); return
         ep_lengths = [len(self.episodes[i]) for i in connected]
         # Apply feature mapping to all episodes that are connected to the preference graph
         features = self.feature_map(torch.cat([self.episodes[i] for i in connected]))
         # Update the reward function using connected episodes
-        self.model.update(history_key, connected, ep_lengths, features, A, y)        
+        self.model.update(history_key, features, ep_lengths, A, i_list, j_list, y)        
         # If applicable, relabel the agent's replay memory using the updated reward function
         self.relabel_memory()  
 
@@ -132,12 +132,18 @@ class PbrlObserver:
         """
         pairs, y, connected = [], [], set()
         for i, j in argwhere(~torch.isnan(self.Pr)).T: # NOTE: PyTorch v1.10 doesn't have argwhere
-            if j < i: pairs.append([i, j]); y.append(self.Pr[i, j]); connected = connected | {i.item(), j.item()}
+            if j < i: 
+                i, j = i.item(), j.item()
+                pairs.append([i, j]); y.append(self.Pr[i, j]); connected = connected | {i, j}
         y = torch.tensor(y, device=self.device).float()
         connected = sorted(list(connected))
         A = torch.zeros((len(pairs), len(connected)), device=self.device)
-        for l, (i, j) in enumerate(pairs): A[l, connected.index(i)], A[l, connected.index(j)] = 1, -1
-        return A, y, connected
+        i_list, j_list = [], []
+        for l, (i, j) in enumerate(pairs): 
+            i_c, j_c = connected.index(i), connected.index(j)
+            A[l, i_c], A[l, j_c] = 1, -1
+            i_list.append(i_c); j_list.append(j_c)
+        return A, y, i_list, j_list, connected
 
     def relabel_memory(self): pass
 
@@ -155,7 +161,7 @@ class PbrlObserver:
         """
         NOTE: To ensure video saving, this is completed *after* env.reset() is called for the next episode.
         """   
-        self._current_ep = torch.tensor(self._current_ep, device=self.device) # Convert to tensor once appending finished
+        self._current_ep = torch.tensor(self._current_ep, device=self.device).float() # Convert to tensor once appending finished
         logs = {}
         # Log reward sums
         if self.P["reward_source"] == "model": 
@@ -214,7 +220,7 @@ def load(fname, P, features):
         assert pbrl.model is None, "New/existing model conflict."
         pbrl.model = dict["model"]
     # pbrl.compute_r_and_var()
-    # A, y, connected = pbrl.construct_A_and_y(pbrl.Pr)
+    # A, y, _, _, connected = pbrl.construct_A_and_y(pbrl.Pr)
     # ep_fitness_cv = fitness_case_v(A, y, pbrl.P["p_clip"])
     # NOTE: pbrl.episodes contains the featurised representation of each transition.
     # pbrl.episodes = [None for _ in range(pbrl.Pr.shape[0])]

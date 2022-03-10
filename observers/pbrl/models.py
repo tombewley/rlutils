@@ -4,14 +4,20 @@ from ...common.utils import reparameterise
 import torch
 import numpy as np
 from scipy.special import xlogy, xlog1py
+from scipy.stats import norm as norm_s
 from tqdm import tqdm
 
 
 norm = torch.distributions.Normal(0, 1)
+
 bce_loss = torch.nn.BCELoss()
+bce_loss_no_red = torch.nn.BCELoss(reduction="none")
 
 
+# TODO: Split models out into separate files
 # TODO: Generic model for others to inherit from
+
+
 class RewardNet:
     def __init__(self, device, feature_names, P):
         self.device = device
@@ -40,7 +46,7 @@ class RewardNet:
         mu, var, _ = self(features)
         return mu.sum(), var.sum()
 
-    def update(self, history_key, ep_nums, ep_lengths, features, A, y):
+    def update(self, _, features, ep_lengths, A, __, ___, y):
         ep_features = torch.split(features, ep_lengths)
         k_train, n_train = A.shape
         rng = np.random.default_rng()
@@ -87,8 +93,8 @@ class RewardTree:
     def __init__(self, device, feature_names, P):
         # === Lazy import ===
         import hyperrectangles as hr
-        self.rules, self.diagram, self.show_rectangles, self.show_split_quality = \
-        hr.rules, hr.diagram, hr.rectangles, hr.show_split_quality
+        self.rules, self.diagram, self.rectangles, self.show_split_quality = \
+        hr.rules, hr.diagram, hr.show_rectangles, hr.show_split_quality
         from hyperrectangles.utils import increment_mean_and_var_sum
         self.increment_mean_and_var_sum = increment_mean_and_var_sum
         # ===================
@@ -101,7 +107,7 @@ class RewardTree:
             root=root, 
             split_dims=space.idxify(feature_names), 
             eval_dims=space.idxify(["reward"]),
-            qual_func=self.split_qual_func 
+            qual_func=self._split_qual_func 
             )
         self.r = torch.zeros(self.m, device=self.device)
         self.var = torch.zeros(self.m, device=self.device) 
@@ -121,21 +127,32 @@ class RewardTree:
         n = self.n(features)
         return n @ self.r, n @ torch.diag(self.var) @ n.T
 
-    def update(self, history_key, ep_nums, ep_lengths, features, A, y, reset_tree=True):
+    def update(self, history_key, features, ep_lengths, A, i_list, j_list, y, reset_tree=True):
         """
         If reset_tree=True, tree is first pruned back to its root (i.e. start from scratch).
         """
+        
+        # Store private variables for this update and perform verification
+        self._i_list, self._j_list, self._y = i_list, j_list, y
+        self._num_eps = len(ep_lengths)
+        assert A.shape == (len(self._i_list), self._num_eps)
+        assert len(features) == sum(ep_lengths)
         # Compute fitness estimates for connected episodes, and apply uniform temporal prior to obtain reward targets
         # NOTE: scaling by episode lengths (making ep fitness correspond to sum not mean) causes weird behaviour
         reward_target = fitness_case_v(A, y, self.P["p_clip"]) # * np.mean(ep_lengths) / ep_lengths
         # Populate tree. 
         self.tree.space.data = np.hstack((
-            np.vstack([[[i, r]] * l for (i, r, l) in zip(ep_nums, reward_target.cpu().numpy(), ep_lengths)]),
+            # NOTE: Using index in connected list rather than pbrl.episodes
+            np.vstack([[[i, r]] * l for i, (r, l) in enumerate(zip(reward_target.cpu().numpy(), ep_lengths))]),
+            # np.vstack([[[i, r]] * l for (i, r, l) in zip(ep_nums, reward_target.cpu().numpy(), ep_lengths)]),
             features.cpu().numpy()                             
             ))
         if reset_tree: self.tree.prune_to(self.tree.root) 
         self.tree.populate()
         num_samples = len(self.tree.space.data)
+        # Store more private variables in each node of the tree
+        self.tree.root._counts = np.array(ep_lengths)
+        self.tree.root._proxy_qual = {}
         # Perform best-first splitting until m_max is reached.
         history_split = []        
         with tqdm(total=self.P["m_max"], initial=self.m, desc="Splitting") as pbar:
@@ -146,12 +163,12 @@ class RewardTree:
                     node, dim, threshold = result
                     history_split.append([self.m, node, dim, threshold, None, sum(self.tree.gather(("var_sum", "reward"))) / num_samples])        
         
-        # Perform minimal cost complexity pruning until labelling loss is minimised.
-        ep_features = torch.split(features, ep_lengths)
-        N = torch.vstack([self.n(f) for f in ep_features])
-        tree_before_merge = self.tree.clone()                
-        history_merge, parent_num, pruned_nums = [], None, None
         if False:
+            # Perform minimal cost complexity pruning until labelling loss is minimised.
+            ep_features = torch.split(features, ep_lengths)
+            N = torch.vstack([self.n(f) for f in ep_features])
+            tree_before_merge = self.tree.clone()                
+            history_merge, parent_num, pruned_nums = [], None, None
             with tqdm(total=self.P["m_max"], initial=self.m, desc="Merging") as pbar:
                 while True: 
                     # Measure loss.
@@ -178,44 +195,54 @@ class RewardTree:
                 if parent_num is None: continue # First entry of history_merge will have this.
                 pruned_nums = self.tree.prune_to(self.tree._get_nodes()[parent_num])
                 assert set(pruned_nums_prev) == set(pruned_nums)
-            
-        
-        # history_split, history_merge = split_merge_cancel(history_split, history_merge)
+
+            # history_split, history_merge = split_merge_cancel(history_split, history_merge)
+            self.history[history_key] = {"split": history_split, "merge": history_merge, "m": self.m}
+
         self.compute_r_and_var()
-        self.history[history_key] = {"split": history_split, "merge": history_merge, "m": self.m}
         print(self.tree.space)
         print(self.tree)
         print(self.rules(self.tree, pred_dims="reward", sf=5))#, out_name="tree_func"))
 
-    def split_qual_func(self, node, split_dim, _, valid_split_indices): 
-        ###
+    def _split_qual_func(self, node, split_dim, _, valid_split_indices): 
+        
         reward_dim = node.space.idxify(["reward"])
-        ###
+        F_diff_other = 0.
+        var_other = 0.
+        loss_prev = 1.
+
         ep_nums, rewards = node.space.data[node.sorted_indices[:,split_dim][:,None], node.space.idxify(["ep","reward"])].T 
-        ep_nums = np.rint(ep_nums).astype(int) 
+        ep_nums = np.rint(ep_nums).astype(int)
         max_num_left = valid_split_indices[-1] + 1 # +1 needed
         mean = np.zeros((2, max_num_left))
         var_sum = mean.copy()
         mean[1,0] = node.mean[reward_dim] 
         var_sum[1,0] = node.var_sum[reward_dim]
-        counts = np.zeros((2, max_num_left, ))
-
-        num_left_range = np.arange(1, max_num_left)
+        counts = np.zeros((2, max_num_left, self._num_eps), dtype=int)
+        counts[1,0] = node._counts
+        num_left_range = np.arange(max_num_left)
         num_range = np.stack((num_left_range, node.num_samples - num_left_range), axis=0)
-        for num_left, num_right in num_range.T:
+        for num_left, num_right in num_range[:,1:].T:
             ep_num, reward = ep_nums[num_left-1], rewards[num_left-1]
             mean[0,num_left], var_sum[0,num_left] = self.increment_mean_and_var_sum(num_left,  mean[0,num_left-1], var_sum[0,num_left-1], reward, 1)
             mean[1,num_left], var_sum[1,num_left] = self.increment_mean_and_var_sum(num_right, mean[1,num_left-1], var_sum[1,num_left-1], reward, -1)                    
+            counts[:,num_left] = counts[:,num_left-1] # Copy
+            counts[0,num_left,ep_num] = counts[0,num_left-1,ep_num] + 1 # Update
+            counts[1,num_left,ep_num] = counts[1,num_left-1,ep_num] - 1 
         
-        
-        var = var_sum[:,1:] / num_range
-        print(var.shape, num_range.shape)
+        node._proxy_qual[split_dim] = var_sum[1,0] - var_sum[:,valid_split_indices].sum(axis=0)
+        # return node._proxy_qual[split_dim]
 
-        print(var)
-        
-        
-        
-        return var_sum[1,0] - var_sum[:,valid_split_indices].sum(axis=0)
+        assert (counts.sum(axis=0) == counts[1,0]).all()
+        i_counts = counts[:,:,self._i_list]
+        j_counts = counts[:,:,self._j_list]
+        F_diff_here = (np.expand_dims(mean, 2) * (i_counts - j_counts)).sum(axis=0)
+        num_range[0,0] = 1 # Prevent div/0 warning
+        var_here = (np.expand_dims(var_sum / num_range, 2) * (i_counts**2 + j_counts**2)).sum(axis=0)
+        y_pred = norm_s.cdf((F_diff_here + F_diff_other) / np.sqrt(var_here + var_other))
+        # Robust cross-entropy loss (https://stackoverflow.com/a/50024648)
+        loss = (-(xlogy(self._y, y_pred) + xlog1py(1 - self._y, -y_pred))).mean(axis=1)
+        return loss_prev - loss[valid_split_indices]
         
     def features_to_indices(self, features):
         return [self.tree.leaves.index(next(iter(
