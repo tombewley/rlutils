@@ -87,7 +87,10 @@ class RewardTree:
     def __init__(self, device, feature_names, P):
         # === Lazy import ===
         import hyperrectangles as hr
-        self.rules, self.diagram, self.rectangles = hr.rules, hr.diagram, hr.show_rectangles
+        self.rules, self.diagram, self.show_rectangles, self.show_split_quality = \
+        hr.rules, hr.diagram, hr.rectangles, hr.show_split_quality
+        from hyperrectangles.utils import increment_mean_and_var_sum
+        self.increment_mean_and_var_sum = increment_mean_and_var_sum
         # ===================
         self.device = device
         self.P = P
@@ -97,7 +100,8 @@ class RewardTree:
             name="reward_function", 
             root=root, 
             split_dims=space.idxify(feature_names), 
-            eval_dims=space.idxify(["reward"])
+            eval_dims=space.idxify(["reward"]),
+            qual_func=self.split_qual_func 
             )
         self.r = torch.zeros(self.m, device=self.device)
         self.var = torch.zeros(self.m, device=self.device) 
@@ -136,42 +140,46 @@ class RewardTree:
         history_split = []        
         with tqdm(total=self.P["m_max"], initial=self.m, desc="Splitting") as pbar:
             while self.m < self.P["m_max"] and len(self.tree.split_queue) > 0:
-                result = self.tree.split_next_best(min_samples_leaf=self.P["min_samples_leaf"]) 
+                result = self.tree.split_next_best(min_samples_leaf=self.P["min_samples_leaf"], store_all_qual=self.P["store_all_qual"]) 
                 if result is not None:
                     pbar.update(1)
                     node, dim, threshold = result
                     history_split.append([self.m, node, dim, threshold, None, sum(self.tree.gather(("var_sum", "reward"))) / num_samples])        
+        
         # Perform minimal cost complexity pruning until labelling loss is minimised.
         ep_features = torch.split(features, ep_lengths)
         N = torch.vstack([self.n(f) for f in ep_features])
         tree_before_merge = self.tree.clone()                
         history_merge, parent_num, pruned_nums = [], None, None
-        with tqdm(total=self.P["m_max"], initial=self.m, desc="Merging") as pbar:
-            while True: 
-                # Measure loss.
-                r, var, var_sum = self.tree.gather(("mean","reward"),("var","reward"),("var_sum","reward"))
-                r, var = torch.tensor(r, device=self.device).float(), torch.tensor(var, device=self.device).float()
-                history_merge.append([self.m, parent_num, pruned_nums,
-                    labelling_loss(A, y, N, r, var, self.P["p_clip"]).item(), # True labelling loss.
-                    sum(var_sum) / num_samples # Proxy loss: variance.
-                    ])
-                if self.m <= self.P["m_stop_merge"]: break
-                # Perform prune.
-                parent_num, pruned_nums = self.tree.prune_mccp()
-                pbar.update(-1)
-                # Efficiently update N array (NOTE: relies on pruned_nums being consecutive and ordered)
-                assert pruned_nums[-1] == pruned_nums[0] + len(pruned_nums)-1
-                N[:,pruned_nums[0]] = N[:,pruned_nums].sum(axis=1)
-                N = torch.cat((N[:,:pruned_nums[1]], N[:,pruned_nums[-1]+1:]), axis=1)
-                if False: assert (N == torch.vstack([self.n(f) for f in ep_features])).all() # Sense check.     
-        # Now prune to minimum-loss size.
-        # NOTE: Size regularisation applied here; use reversed list to ensure *last* occurrence returned.
-        optimum = (len(history_merge)-1) - np.argmin([l + (self.P["alpha"] * m) for m,_,_,l,_ in reversed(history_merge)]) 
-        self.tree = tree_before_merge # Reset to pre-merging stage.
-        for _, parent_num, pruned_nums_prev, _, _ in history_merge[:optimum+1]: 
-            if parent_num is None: continue # First entry of history_merge will have this.
-            pruned_nums = self.tree.prune_to(self.tree._get_nodes()[parent_num])
-            assert set(pruned_nums_prev) == set(pruned_nums)
+        if False:
+            with tqdm(total=self.P["m_max"], initial=self.m, desc="Merging") as pbar:
+                while True: 
+                    # Measure loss.
+                    r, var, var_sum = self.tree.gather(("mean","reward"),("var","reward"),("var_sum","reward"))
+                    r, var = torch.tensor(r, device=self.device).float(), torch.tensor(var, device=self.device).float()
+                    history_merge.append([self.m, parent_num, pruned_nums,
+                        labelling_loss(A, y, N, r, var, self.P["p_clip"]).item(), # True labelling loss.
+                        sum(var_sum) / num_samples # Proxy loss: variance.
+                        ])
+                    if self.m <= self.P["m_stop_merge"]: break
+                    # Perform prune.
+                    parent_num, pruned_nums = self.tree.prune_mccp()
+                    pbar.update(-1)
+                    # Efficiently update N array (NOTE: relies on pruned_nums being consecutive and ordered)
+                    assert pruned_nums[-1] == pruned_nums[0] + len(pruned_nums)-1
+                    N[:,pruned_nums[0]] = N[:,pruned_nums].sum(axis=1)
+                    N = torch.cat((N[:,:pruned_nums[1]], N[:,pruned_nums[-1]+1:]), axis=1)
+                    if False: assert (N == torch.vstack([self.n(f) for f in ep_features])).all() # Sense check.     
+            # Now prune to minimum-loss size.
+            # NOTE: Size regularisation applied here; use reversed list to ensure *last* occurrence returned.
+            optimum = (len(history_merge)-1) - np.argmin([l + (self.P["alpha"] * m) for m,_,_,l,_ in reversed(history_merge)]) 
+            self.tree = tree_before_merge # Reset to pre-merging stage.
+            for _, parent_num, pruned_nums_prev, _, _ in history_merge[:optimum+1]: 
+                if parent_num is None: continue # First entry of history_merge will have this.
+                pruned_nums = self.tree.prune_to(self.tree._get_nodes()[parent_num])
+                assert set(pruned_nums_prev) == set(pruned_nums)
+            
+        
         # history_split, history_merge = split_merge_cancel(history_split, history_merge)
         self.compute_r_and_var()
         self.history[history_key] = {"split": history_split, "merge": history_merge, "m": self.m}
@@ -179,6 +187,36 @@ class RewardTree:
         print(self.tree)
         print(self.rules(self.tree, pred_dims="reward", sf=5))#, out_name="tree_func"))
 
+    def split_qual_func(self, node, split_dim, _, valid_split_indices): 
+        ###
+        reward_dim = node.space.idxify(["reward"])
+        ###
+        ep_nums, rewards = node.space.data[node.sorted_indices[:,split_dim][:,None], node.space.idxify(["ep","reward"])].T 
+        ep_nums = np.rint(ep_nums).astype(int) 
+        max_num_left = valid_split_indices[-1] + 1 # +1 needed
+        mean = np.zeros((2, max_num_left))
+        var_sum = mean.copy()
+        mean[1,0] = node.mean[reward_dim] 
+        var_sum[1,0] = node.var_sum[reward_dim]
+        counts = np.zeros((2, max_num_left, ))
+
+        num_left_range = np.arange(1, max_num_left)
+        num_range = np.stack((num_left_range, node.num_samples - num_left_range), axis=0)
+        for num_left, num_right in num_range.T:
+            ep_num, reward = ep_nums[num_left-1], rewards[num_left-1]
+            mean[0,num_left], var_sum[0,num_left] = self.increment_mean_and_var_sum(num_left,  mean[0,num_left-1], var_sum[0,num_left-1], reward, 1)
+            mean[1,num_left], var_sum[1,num_left] = self.increment_mean_and_var_sum(num_right, mean[1,num_left-1], var_sum[1,num_left-1], reward, -1)                    
+        
+        
+        var = var_sum[:,1:] / num_range
+        print(var.shape, num_range.shape)
+
+        print(var)
+        
+        
+        
+        return var_sum[1,0] - var_sum[:,valid_split_indices].sum(axis=0)
+        
     def features_to_indices(self, features):
         return [self.tree.leaves.index(next(iter(
                 self.tree.propagate([None,None]+list(f), mode="max")))) for f in features.cpu().numpy()]
