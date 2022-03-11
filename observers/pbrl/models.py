@@ -160,7 +160,8 @@ class RewardTree:
         # Perform best-first splitting until m_max is reached
         with tqdm(total=self.P["m_max"], initial=self.m, desc="Splitting") as pbar:
             while self.m < self.P["m_max"] and len(self.tree.split_queue) > 0:
-                node = self.tree.split_next_best(min_samples_leaf=self.P["min_samples_leaf"], store_all_qual=self.P["store_all_qual"]) 
+                node = self.tree.split_next_best(
+                    min_samples_leaf=self.P["min_samples_leaf"], num_from_queue=self.P["num_from_queue"], store_all_qual=self.P["store_all_qual"]) 
                 if node is not None:
                     # Store counts in left and right children
                     node.left.counts = np.zeros_like(node.counts)
@@ -171,7 +172,7 @@ class RewardTree:
                     # Calculate new loss, pair_diff and pair_var
                     mean, var, counts = self.tree.gather(("mean","reward"), ("var","reward"), "counts")
                     new_loss, self._current_pair_diff, self._current_pair_var = self.preference_loss(np.array(mean), np.array(var), np.array(counts))
-                    if self.P["loss"] == "preference": assert np.isclose(max(node.all_qual[node.split_dim]), self._current_loss - new_loss)
+                    # if self.P["loss"] == "preference": assert np.isclose(max(node.all_qual[node.split_dim]), self._current_loss - new_loss)
                     self._current_loss = new_loss
                     # Append to history
                     history_split.append([self.m,
@@ -181,6 +182,13 @@ class RewardTree:
                     # NOTE: Empty split cache and recompute queue; necessary because split quality is not local
                     self.tree._compute_split_queue()
                     pbar.update(1)
+
+        """
+        TODO: Pruning
+        Linearity of MCCP does *not* hold for preference loss, so cannot rely on weakest link pruning
+        Instead, be more conservative and only prune one leaf at a time, 
+        greedily picking the one that yields the smallest reduction in preference loss
+        """
         
         history_merge = [history_split[-1]]
         if False:
@@ -250,12 +258,11 @@ class RewardTree:
             counts[0,num_left,ep_num] = counts[0,num_left-1,ep_num] + 1 # Update
             counts[1,num_left,ep_num] = counts[1,num_left-1,ep_num] - 1 
         
-        node.proxy_qual[split_dim] = var_sum[1,0] - var_sum[:,valid_split_indices].sum(axis=0)
-
         assert (counts.sum(axis=0) == counts[1,0]).all()
         num_range[0,0] = 1 # Prevent div/0 warning
         loss, _, _ = self.preference_loss(mean, var_sum / num_range, counts, split_mode=True)
-        assert not np.isnan(np.einsum("i->", loss))
+
+        node.proxy_qual[split_dim] = var_sum[1,0] - var_sum[:,valid_split_indices].sum(axis=0)
         if self.P["loss"] == "variance":     return node.proxy_qual[split_dim]
         elif self.P["loss"] == "preference": return self._current_loss - loss[valid_split_indices]
 
@@ -277,11 +284,12 @@ class RewardTree:
             assert self._current_pair_diff.shape == self._current_pair_var.shape == pair_diff[0].shape == pair_var[0].shape
             # pair_diff[0] and pair_var[0] are contributions of this node to totals pre-splitting   
             pair_diff += self._current_pair_diff - pair_diff[0]
-            pair_var += self._current_pair_var - pair_var[0]
+            pair_var = np.maximum(pair_var + self._current_pair_var - pair_var[0], 0) # Clip at zero
         pair_var[np.logical_and(pair_diff == 0, pair_var == 0)] = 1 # Handle 0/0 case
         y_pred = norm_s.cdf(pair_diff / np.sqrt(pair_var))
         # Robust cross-entropy loss (https://stackoverflow.com/a/50024648)
         loss = (-(xlogy(self._y, y_pred) + xlog1py(1 - self._y, -y_pred))).mean(axis=1)
+        assert not np.isnan(np.einsum("i->", loss))
         return loss, pair_diff[0], pair_var[0]
         
     def features_to_indices(self, features):
