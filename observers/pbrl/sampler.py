@@ -1,13 +1,20 @@
 import torch
 from numpy import unravel_index, argwhere
-from numpy.random import choice
+from numpy.random import default_rng
 
 
 norm = torch.distributions.Normal(0, 1)
 
 
 class Sampler:
-    def __init__(self, pbrl, P): self.pbrl, self.P = pbrl, P
+    def __init__(self, pbrl, P): 
+        self.pbrl, self.P = pbrl, P
+        self.seed()
+
+    def seed(self, seed=None):
+        self.pt_rng = torch.Generator(device=self.pbrl.device)
+        if seed is not None: self.pt_rng.manual_seed(seed)
+        self.np_rng = default_rng(seed)
 
     def __iter__(self): 
         """
@@ -53,11 +60,12 @@ class Sampler:
             if torch.nansum(p) == 0: p[~nans] = 1
             p[nans] = 0
             # ...and sample a pair from the distribution
-            i, j = unravel_index(list(torch.utils.data.WeightedRandomSampler(p.ravel(), num_samples=1))[0], p.shape)
+            i, j = unravel_index(list(torch.utils.data.WeightedRandomSampler(
+                   weights=p.ravel(), num_samples=1, generator=self.pt_rng))[0], p.shape)
         else: 
             # ...and pick at random from the set of argmax pairs
             argmaxes = argwhere(p == torch.max(p[~nans])).T
-            i, j = argmaxes[choice(len(argmaxes))]; i, j = i.item(), j.item()
+            i, j = argmaxes[self.np_rng.choice(len(argmaxes))]; i, j = i.item(), j.item()
         # Check that all constraints are satisfied
         assert i != j and not_rated[i, j]
         if self.P["constrained"]:
