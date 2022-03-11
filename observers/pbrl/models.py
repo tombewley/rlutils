@@ -59,9 +59,9 @@ class RewardNet:
             for i in range(n_train):
                 if in_batch[i]: F_pred[i], var_pred[i] = self.fitness(features=ep_features[i])
             if self.P["preference_eqn"] == "thurstone": 
-                F_diff = A_batch @ F_pred
+                pair_diff = A_batch @ F_pred
                 sigma = torch.sqrt(abs_A_batch @ var_pred)
-                y_pred = norm.cdf(F_diff / sigma)
+                y_pred = norm.cdf(pair_diff / sigma)
                 loss = bce_loss(y_pred, y_batch) # Binary cross-entropy loss, PEBBLE equation 4
             elif self.P["preference_eqn"] == "bradley-terry": 
                 # https://github.com/rll-research/BPref/blob/f3ece2ecf04b5d11b276d9bbb19b8004c29429d1/reward_model.py#L142
@@ -131,7 +131,6 @@ class RewardTree:
         """
         If reset_tree=True, tree is first pruned back to its root (i.e. start from scratch).
         """
-        
         # Store private variables for this update and perform verification
         self._i_list, self._j_list, self._y = i_list, j_list, y
         self._num_eps = len(ep_lengths)
@@ -150,18 +149,29 @@ class RewardTree:
         if reset_tree: self.tree.prune_to(self.tree.root) 
         self.tree.populate()
         num_samples = len(self.tree.space.data)
-        # Store more private variables in each node of the tree
-        self.tree.root._counts = np.array(ep_lengths)
+        # Store per-episode counts for each node of the tree
+        assert reset_tree
+        self.tree.root.counts = np.array(ep_lengths)
         self.tree.root._proxy_qual = {}
-        # Perform best-first splitting until m_max is reached.
-        history_split = []        
+        # Perform best-first splitting until m_max is reached
+        # history_split = []        
         with tqdm(total=self.P["m_max"], initial=self.m, desc="Splitting") as pbar:
             while self.m < self.P["m_max"] and len(self.tree.split_queue) > 0:
-                result = self.tree.split_next_best(min_samples_leaf=self.P["min_samples_leaf"], store_all_qual=self.P["store_all_qual"]) 
-                if result is not None:
+                # Before splitting, calculate loss, pair_diff and pair_var for the current state of the tree
+                mean, var, counts = self.tree.gather(("mean","reward"), ("var","reward"), "counts")
+                self._current_loss, self._current_pair_diff, self._current_pair_var = self.preference_loss(np.array(mean), np.array(var), np.array(counts))
+                # Evaluate splits for all current leaves and split the best
+                node = self.tree.split_next_best(min_samples_leaf=self.P["min_samples_leaf"], store_all_qual=self.P["store_all_qual"]) 
+                if node is not None:
+                    # Store counts in left and right children
+                    node.left.counts = np.zeros_like(node.counts)
+                    e, c = np.unique(np.rint(node.left.data(0)).astype(int), return_counts=True)
+                    node.left.counts[e] = c
+                    node.right.counts = node.counts - node.left.counts
+                    node.left._proxy_qual, node.right._proxy_qual = {}, {}
+                    # node_num, dim, threshold = result
+                    # history_split.append([self.m, node_num, dim, threshold, None, sum(self.tree.gather(("var_sum", "reward"))) / num_samples])        
                     pbar.update(1)
-                    node, dim, threshold = result
-                    history_split.append([self.m, node, dim, threshold, None, sum(self.tree.gather(("var_sum", "reward"))) / num_samples])        
         
         if False:
             # Perform minimal cost complexity pruning until labelling loss is minimised.
@@ -205,21 +215,18 @@ class RewardTree:
         print(self.rules(self.tree, pred_dims="reward", sf=5))#, out_name="tree_func"))
 
     def _split_qual_func(self, node, split_dim, _, valid_split_indices): 
-        
-        reward_dim = node.space.idxify(["reward"])
-        F_diff_other = 0.
-        var_other = 0.
-        loss_prev = 1.
-
-        ep_nums, rewards = node.space.data[node.sorted_indices[:,split_dim][:,None], node.space.idxify(["ep","reward"])].T 
+        """
+        NOTE: Assumes ep nums and rewards are in dimensions 0 and 1 of node.space.data respectively.
+        """
+        ep_nums, rewards = node.space.data[node.sorted_indices[:,split_dim][:,None], [0,1]].T 
         ep_nums = np.rint(ep_nums).astype(int)
         max_num_left = valid_split_indices[-1] + 1 # +1 needed
         mean = np.zeros((2, max_num_left))
         var_sum = mean.copy()
-        mean[1,0] = node.mean[reward_dim] 
-        var_sum[1,0] = node.var_sum[reward_dim]
+        mean[1,0] = node.mean[1] 
+        var_sum[1,0] = node.var_sum[1]
         counts = np.zeros((2, max_num_left, self._num_eps), dtype=int)
-        counts[1,0] = node._counts
+        counts[1,0] = node.counts
         num_left_range = np.arange(max_num_left)
         num_range = np.stack((num_left_range, node.num_samples - num_left_range), axis=0)
         for num_left, num_right in num_range[:,1:].T:
@@ -234,15 +241,35 @@ class RewardTree:
         # return node._proxy_qual[split_dim]
 
         assert (counts.sum(axis=0) == counts[1,0]).all()
+        num_range[0,0] = 1 # Prevent div/0 warning
+        loss, _, _ = self.preference_loss(mean, var_sum / num_range, counts, split_mode=True)
+        assert not np.isnan(np.einsum("i->", loss))        
+        return self._current_loss - loss[valid_split_indices]
+
+    def preference_loss(self, mean, var, counts, split_mode=False):
+        """
+        xxx
+        """
+        assert mean.shape[0] == var.shape[0] == counts.shape[0]
+        if split_mode: 
+            assert len(mean.shape) == len(var.shape) == 2 and len(counts.shape) == 3 and counts.shape[0] == 2
+        else:
+            assert len(mean.shape) == len(var.shape) == 1 and len(counts.shape) == 2
+            mean, var, counts = np.expand_dims(mean, 1), np.expand_dims(var, 1), np.expand_dims(counts, 1)
         i_counts = counts[:,:,self._i_list]
         j_counts = counts[:,:,self._j_list]
-        F_diff_here = (np.expand_dims(mean, 2) * (i_counts - j_counts)).sum(axis=0)
-        num_range[0,0] = 1 # Prevent div/0 warning
-        var_here = (np.expand_dims(var_sum / num_range, 2) * (i_counts**2 + j_counts**2)).sum(axis=0)
-        y_pred = norm_s.cdf((F_diff_here + F_diff_other) / np.sqrt(var_here + var_other))
+        pair_diff = (np.expand_dims(mean, 2) * (i_counts - j_counts)).sum(axis=0)
+        pair_var = (np.expand_dims(var, 2) * (i_counts**2 + j_counts**2)).sum(axis=0)
+        if split_mode: # Need to add pair_diff and pair_var contributions from the rest of the tree
+            assert self._current_pair_diff.shape == self._current_pair_var.shape == pair_diff[0].shape == pair_var[0].shape
+            # pair_diff[0] and pair_var[0] are contributions of this node to totals pre-splitting   
+            pair_diff += self._current_pair_diff - pair_diff[0]
+            pair_var += self._current_pair_var - pair_var[0]
+        pair_var[np.logical_and(pair_diff == 0, pair_var == 0)] = 1 # Handle 0/0 case
+        y_pred = norm_s.cdf(pair_diff / np.sqrt(pair_var))
         # Robust cross-entropy loss (https://stackoverflow.com/a/50024648)
         loss = (-(xlogy(self._y, y_pred) + xlog1py(1 - self._y, -y_pred))).mean(axis=1)
-        return loss_prev - loss[valid_split_indices]
+        return loss, pair_diff[0], pair_var[0]
         
     def features_to_indices(self, features):
         return [self.tree.leaves.index(next(iter(
@@ -274,11 +301,11 @@ def labelling_loss(A, y, N, r, var, p_clip, old=False):
     Loss function l that this algorithm is ultimately trying to minimise.
     """
     N_diff = A @ N
-    F_diff = N_diff @ r
+    pair_diff = N_diff @ r
     if old: sigma = torch.sqrt(N_diff**2 @ var) # Faster than N A^T diag(var) A N^T
     else:   sigma = torch.sqrt(torch.abs(A) @ N**2 @ var)   
-    sigma[torch.logical_and(F_diff == 0, sigma == 0)] = 1 # Handle 0/0 case
-    y_pred = norm.cdf(F_diff / sigma) # Div/0 is fine
+    sigma[torch.logical_and(pair_diff == 0, sigma == 0)] = 1 # Handle 0/0 case
+    y_pred = norm.cdf(pair_diff / sigma) # Div/0 is fine
     if old:
         d = norm.ppf(torch.clamp(y, p_clip, 1-p_clip)) 
         d_pred = norm.ppf(torch.clamp(y_pred, p_clip, 1-p_clip)) 
