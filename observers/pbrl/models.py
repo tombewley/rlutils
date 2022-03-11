@@ -75,18 +75,9 @@ class RewardNet:
             # print(loss.item())
 
             self.net.optimise(loss, retain_graph=False)
-
-            # from torchviz import make_dot
-            # make_dot(loss).render("loss_graph", format="png")
-        
         # Normalise rewards to be negative on the training set, with unit standard deviation
         with torch.no_grad(): all_rewards, _, _ = self(features, normalise=False)
         self.shift, self.scale = all_rewards.max(), all_rewards.std()
-
-        # all_rewards = self.reward(features=features).detach().numpy()
-        # print(all_rewards.max(), all_rewards.std())
-        # plt.hist(all_rewards)
-        # plt.show()
 
 
 class RewardTree:
@@ -317,57 +308,3 @@ def fitness_case_v(A, y, p_clip):
     d = norm.icdf(torch.clamp(y, p_clip, 1-p_clip)) # Clip to prevent infinite values
     f, _, _, _ = torch.linalg.lstsq(A.T @ A, A.T @ d, rcond=None)
     return f - f.max() # NOTE: Shift so that maximum fitness is zero (cost function)
-
-def labelling_loss(A, y, N, r, var, p_clip, old=False):
-    """
-    Loss function l that this algorithm is ultimately trying to minimise.
-    """
-    N_diff = A @ N
-    pair_diff = N_diff @ r
-    if old: sigma = torch.sqrt(N_diff**2 @ var) # Faster than N A^T diag(var) A N^T
-    else:   sigma = torch.sqrt(torch.abs(A) @ N**2 @ var)   
-    sigma[torch.logical_and(pair_diff == 0, sigma == 0)] = 1 # Handle 0/0 case
-    y_pred = norm.cdf(pair_diff / sigma) # Div/0 is fine
-    if old:
-        d = norm.ppf(torch.clamp(y, p_clip, 1-p_clip)) 
-        d_pred = norm.ppf(torch.clamp(y_pred, p_clip, 1-p_clip)) 
-        assert not np.isnan(d_pred).any()
-        return ((d_pred - d)**2).mean() # MSE loss
-    else:
-        return bce_loss(y_pred, y) # BCE loss
-
-def split_merge_cancel(split, merge):
-    raise NotImplementedError("Still doesn't work")
-    split.reverse()
-    for m, (_, siblings, _) in enumerate(merge):
-        split_cancel = set()
-        subtractions_to_undo = 0
-        for s, (_, parent_num, _, _, _) in enumerate(split): 
-            if len(siblings) == 1: break
-            if parent_num < siblings[-1]:
-                siblings = siblings[:-1]
-                if parent_num < siblings[0]: 
-                    siblings = [siblings[0]-1] + siblings; subtractions_to_undo += 1
-                else: 
-                    split_cancel.add(s)
-                    subtractions_to_undo = 0
-                    for ss, (_, later_parent, _, _, _) in enumerate(split[:s]): 
-                        if later_parent > siblings[0]: split[ss][1] -= 1 # ; split[ss][0] -= 1
-        siblings = [sb+subtractions_to_undo for sb in siblings]
-        split = [split[s] for s in range(len(split)) if s not in split_cancel]
-        merge[m][1] = siblings
-    split.reverse()
-    merge = [m for m in merge if len(m[1]) > 1]
-
-    print("====")
-    print(split)
-    print(merge)
-
-    return split, merge
-       
-# split = [0,2,5,4,0,3,5,8,10,7]
-# merge = [[3,4,5,6,7,8,9,10]]
-# [[0, s, None, None, None] for s in split]
-# [[None, m, None] for m in merge]
-
-# split_merge_cancel(split, merge)
