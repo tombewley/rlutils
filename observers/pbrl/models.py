@@ -107,7 +107,7 @@ class RewardTree:
             root=root, 
             split_dims=space.idxify(feature_names), 
             eval_dims=space.idxify(["reward"]),
-            qual_func=self._split_qual_func 
+            qual_func=self._split_qual_func
             )
         self.r = torch.zeros(self.m, device=self.device)
         self.var = torch.zeros(self.m, device=self.device) 
@@ -152,15 +152,14 @@ class RewardTree:
         # Store per-episode counts for each node of the tree
         assert reset_tree
         self.tree.root.counts = np.array(ep_lengths)
-        self.tree.root._proxy_qual = {}
+        self.tree.root.proxy_qual = {}
+        # Calculate loss, pair_diff and pair_var for the initial state of the tree
+        mean, var, counts = self.tree.gather(("mean","reward"), ("var","reward"), "counts")
+        self._current_loss, self._current_pair_diff, self._current_pair_var = self.preference_loss(np.array(mean), np.array(var), np.array(counts))
+        history_split = [[self.m, self._current_loss, sum(self.tree.gather(("var_sum", "reward"))) / num_samples]]
         # Perform best-first splitting until m_max is reached
-        # history_split = []        
         with tqdm(total=self.P["m_max"], initial=self.m, desc="Splitting") as pbar:
             while self.m < self.P["m_max"] and len(self.tree.split_queue) > 0:
-                # Before splitting, calculate loss, pair_diff and pair_var for the current state of the tree
-                mean, var, counts = self.tree.gather(("mean","reward"), ("var","reward"), "counts")
-                self._current_loss, self._current_pair_diff, self._current_pair_var = self.preference_loss(np.array(mean), np.array(var), np.array(counts))
-                # Evaluate splits for all current leaves and split the best
                 node = self.tree.split_next_best(min_samples_leaf=self.P["min_samples_leaf"], store_all_qual=self.P["store_all_qual"]) 
                 if node is not None:
                     # Store counts in left and right children
@@ -168,17 +167,28 @@ class RewardTree:
                     e, c = np.unique(np.rint(node.left.data(0)).astype(int), return_counts=True)
                     node.left.counts[e] = c
                     node.right.counts = node.counts - node.left.counts
-                    node.left._proxy_qual, node.right._proxy_qual = {}, {}
-                    # node_num, dim, threshold = result
-                    # history_split.append([self.m, node_num, dim, threshold, None, sum(self.tree.gather(("var_sum", "reward"))) / num_samples])        
+                    node.left.proxy_qual, node.right.proxy_qual = {}, {}
+                    # Calculate new loss, pair_diff and pair_var
+                    mean, var, counts = self.tree.gather(("mean","reward"), ("var","reward"), "counts")
+                    new_loss, self._current_pair_diff, self._current_pair_var = self.preference_loss(np.array(mean), np.array(var), np.array(counts))
+                    if self.P["loss"] == "preference": assert np.isclose(max(node.all_qual[node.split_dim]), self._current_loss - new_loss)
+                    self._current_loss = new_loss
+                    # Append to history
+                    history_split.append([self.m,
+                        self._current_loss,                                        # Preference loss
+                        sum(self.tree.gather(("var_sum", "reward"))) / num_samples # Proxy loss: variance
+                        ])
+                    # NOTE: Empty split cache and recompute queue; necessary because split quality is not local
+                    self.tree._compute_split_queue()
                     pbar.update(1)
         
+        history_merge = [history_split[-1]]
         if False:
             # Perform minimal cost complexity pruning until labelling loss is minimised.
             ep_features = torch.split(features, ep_lengths)
             N = torch.vstack([self.n(f) for f in ep_features])
             tree_before_merge = self.tree.clone()                
-            history_merge, parent_num, pruned_nums = [], None, None
+            parent_num, pruned_nums = None, None
             with tqdm(total=self.P["m_max"], initial=self.m, desc="Merging") as pbar:
                 while True: 
                     # Measure loss.
@@ -206,8 +216,11 @@ class RewardTree:
                 pruned_nums = self.tree.prune_to(self.tree._get_nodes()[parent_num])
                 assert set(pruned_nums_prev) == set(pruned_nums)
 
-            # history_split, history_merge = split_merge_cancel(history_split, history_merge)
-            self.history[history_key] = {"split": history_split, "merge": history_merge, "m": self.m}
+        # history_split, history_merge = split_merge_cancel(history_split, history_merge)
+        self.history[history_key] = {"split": history_split, "merge": history_merge, "m": self.m}
+
+        # Delete _current variables for safety; prevents further splitting except by calling this method
+        del self._current_loss, self._current_pair_diff, self._current_pair_var
 
         self.compute_r_and_var()
         print(self.tree.space)
@@ -237,14 +250,14 @@ class RewardTree:
             counts[0,num_left,ep_num] = counts[0,num_left-1,ep_num] + 1 # Update
             counts[1,num_left,ep_num] = counts[1,num_left-1,ep_num] - 1 
         
-        node._proxy_qual[split_dim] = var_sum[1,0] - var_sum[:,valid_split_indices].sum(axis=0)
-        # return node._proxy_qual[split_dim]
+        node.proxy_qual[split_dim] = var_sum[1,0] - var_sum[:,valid_split_indices].sum(axis=0)
 
         assert (counts.sum(axis=0) == counts[1,0]).all()
         num_range[0,0] = 1 # Prevent div/0 warning
         loss, _, _ = self.preference_loss(mean, var_sum / num_range, counts, split_mode=True)
-        assert not np.isnan(np.einsum("i->", loss))        
-        return self._current_loss - loss[valid_split_indices]
+        assert not np.isnan(np.einsum("i->", loss))
+        if self.P["loss"] == "variance":     return node.proxy_qual[split_dim]
+        elif self.P["loss"] == "preference": return self._current_loss - loss[valid_split_indices]
 
     def preference_loss(self, mean, var, counts, split_mode=False):
         """
