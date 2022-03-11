@@ -286,7 +286,8 @@ class RewardTree:
             pair_diff += self._current_pair_diff - pair_diff[0]
             pair_var = np.maximum(pair_var + self._current_pair_var - pair_var[0], 0) # Clip at zero
         pair_var[np.logical_and(pair_diff == 0, pair_var == 0)] = 1 # Handle 0/0 case
-        y_pred = norm_s.cdf(pair_diff / np.sqrt(pair_var))
+        with np.errstate(divide="ignore"):
+            y_pred = norm_s.cdf(pair_diff / np.sqrt(pair_var)) # Div/0 is fine
         # Robust cross-entropy loss (https://stackoverflow.com/a/50024648)
         loss = (-(xlogy(self._y, y_pred) + xlog1py(1 - self._y, -y_pred))).mean(axis=1)
         assert not np.isnan(np.einsum("i->", loss))
