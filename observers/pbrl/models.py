@@ -49,6 +49,7 @@ class RewardNet:
         ep_features = torch.split(features, ep_lengths)
         k_train, n_train = A.shape
         rng = np.random.default_rng()
+        losses = []
         for _ in range(self.P["num_batches_per_update"]):
             batch = rng.choice(k_train, size=min(k_train, self.P["batch_size"]), replace=False)
             A_batch, y_batch = A[batch], y[batch]
@@ -71,12 +72,14 @@ class RewardNet:
 
                 # y_pred = torch.exp(log_y_pred[:,1])
             # print(torch.vstack((y_pred, y_batch)).detach().numpy())
-            # print(loss.item())
 
             self.net.optimise(loss, retain_graph=False)
+            losses.append(loss.item())
+            # print(losses[-1])
         # Normalise rewards to be negative on the training set, with unit standard deviation
         with torch.no_grad(): all_rewards, _, _ = self(features, normalise=False)
         self.shift, self.scale = all_rewards.max(), all_rewards.std()
+        return {"preference_loss": np.mean(losses)}
 
 
 class RewardTree:
@@ -166,7 +169,7 @@ class RewardTree:
                     self._current_loss = new_loss
                     # Append to history
                     history_split.append([self.m,
-                        self._current_loss,                                        # Preference loss
+                        self._current_loss[0],                                     # Preference loss
                         sum(self.tree.gather(("var_sum", "reward"))) / num_samples # Proxy loss: variance
                         ])
                     # NOTE: Empty split cache and recompute queue; necessary because split quality is not local
@@ -194,7 +197,7 @@ class RewardTree:
                 assert self.tree.prune_to(self.tree.leaves[x].parent) == {x, x+1}
                 prune_indices.append(x)
                 history_prune.append([self.m,
-                    loss,                                                      # Preference loss
+                    loss[0],                                                   # Preference loss
                     sum(self.tree.gather(("var_sum", "reward"))) / num_samples # Proxy loss: variance
                     ])
                 pbar.update(1)
@@ -211,6 +214,7 @@ class RewardTree:
         print(self.tree.space)
         print(self.tree)
         print(self.rules(self.tree, pred_dims="reward", sf=5))#, out_name="tree_func"))
+        return {"preference_loss": history_prune[optimum][1], "num_leaves": self.m}
 
     def _split_qual_func(self, node, split_dim, _, valid_split_indices): 
         """

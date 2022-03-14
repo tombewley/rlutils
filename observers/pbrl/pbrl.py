@@ -122,9 +122,10 @@ class PbrlObserver:
         # Apply feature mapping to all episodes that are connected to the preference graph
         features = self.feature_map(torch.cat([self.episodes[i] for i in connected]))
         # Update the reward function using connected episodes
-        self.model.update(history_key, features, ep_lengths, A, i_list, j_list, y)        
+        logs = self.model.update(history_key, features, ep_lengths, A, i_list, j_list, y)
         # If applicable, relabel the agent's replay memory using the updated reward function
-        self.relabel_memory()  
+        self.relabel_memory()
+        return logs
 
     def construct_A_and_y(self):
         """
@@ -189,7 +190,7 @@ class PbrlObserver:
                 self.preference_batch(batch_size=batch_size, ij_min=self._n_on_prev_batch)
                 self._batch_num += 1 
                 self._n_on_prev_batch = len(self.episodes)
-                self.update(history_key=(ep+1))
+                logs.update(self.update(history_key=(ep+1)))
             logs["feedback_count"] = self._k
             # Periodically log and save out
             if self.logger is not None and (ep+1) % self.logger.P["freq"] == 0: self.logger(history_key=(ep+1))   
