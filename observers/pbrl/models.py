@@ -122,7 +122,7 @@ class RewardTree:
         If reset_tree=True, the tree is first pruned back to its root (i.e. start from scratch).
         """
         # Store private variables for this update and perform verification
-        self._num_eps, self._i_list, self._j_list, self._y,  = len(ep_lengths), i_list, j_list, y
+        self._num_eps, self._i_list, self._j_list, self._y,  = len(ep_lengths), i_list, j_list, y.cpu().numpy()
         assert A.shape == (len(self._i_list), self._num_eps)
         assert len(features) == sum(ep_lengths)
         # Compute fitness estimates for connected episodes, and apply uniform temporal prior to obtain reward targets
@@ -132,7 +132,6 @@ class RewardTree:
         self.tree.space.data = np.hstack((
             # NOTE: Using index in connected list rather than pbrl.episodes
             np.vstack([[[i, r]] * l for i, (r, l) in enumerate(zip(reward_target.cpu().numpy(), ep_lengths))]),
-            # np.vstack([[[i, r]] * l for (i, r, l) in zip(ep_nums, reward_target.cpu().numpy(), ep_lengths)]),
             features.cpu().numpy()                             
             ))
         if reset_tree: self.tree.prune_to(self.tree.root) 
