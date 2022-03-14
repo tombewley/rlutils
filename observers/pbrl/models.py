@@ -151,30 +151,31 @@ class RewardTree:
         self._current_loss, self._current_pair_diff, self._current_pair_var = self.preference_loss(mean, var, counts)
         history_split = [[self.m, self._current_loss, sum(self.tree.gather(("var_sum", "reward"))) / num_samples]]
         # Perform best-first splitting until m_max is reached
-        with tqdm(total=self.P["m_max"], initial=self.m, desc="Splitting") as pbar:
-            while self.m < self.P["m_max"] and len(self.tree.split_queue) > 0:
-                node = self.tree.split_next_best(
-                    min_samples_leaf=self.P["min_samples_leaf"], num_from_queue=self.P["num_from_queue"], store_all_qual=self.P["store_all_qual"]) 
-                if node is not None:
-                    # Store counts in left and right children
-                    node.left.counts = np.zeros_like(node.counts)
-                    e, c = np.unique(np.rint(node.left.data(0)).astype(int), return_counts=True)
-                    node.left.counts[e] = c
-                    node.right.counts = node.counts - node.left.counts
-                    node.left.proxy_qual, node.right.proxy_qual = {}, {}
-                    # Calculate new loss, pair_diff and pair_var
-                    mean, var, counts = (np.array(attr) for attr in self.tree.gather(("mean","reward"), ("var","reward"), "counts"))
-                    new_loss, self._current_pair_diff, self._current_pair_var = self.preference_loss(mean, var, counts)
-                    # if not self.P["split_by_variance"]: assert np.isclose(max(node.all_qual[node.split_dim]), self._current_loss - new_loss)
-                    self._current_loss = new_loss
-                    # Append to history
-                    history_split.append([self.m,
-                        self._current_loss[0],                                     # Preference loss
-                        sum(self.tree.gather(("var_sum", "reward"))) / num_samples # Proxy loss: variance
-                        ])
-                    # NOTE: Empty split cache and recompute queue; necessary because split quality is not local
-                    self.tree._compute_split_queue()
-                    pbar.update(1)
+        with np.errstate(divide="ignore"): # __enter__ and __exit__ are both expensive here, so only do this once
+            with tqdm(total=self.P["m_max"], initial=self.m, desc="Splitting") as pbar:
+                while self.m < self.P["m_max"] and len(self.tree.split_queue) > 0:
+                    node = self.tree.split_next_best(
+                        min_samples_leaf=self.P["min_samples_leaf"], num_from_queue=self.P["num_from_queue"], store_all_qual=self.P["store_all_qual"])
+                    if node is not None:
+                        # Store counts in left and right children
+                        node.left.counts = np.zeros_like(node.counts)
+                        e, c = np.unique(np.rint(node.left.data(0)).astype(int), return_counts=True)
+                        node.left.counts[e] = c
+                        node.right.counts = node.counts - node.left.counts
+                        node.left.proxy_qual, node.right.proxy_qual = {}, {}
+                        # Calculate new loss, pair_diff and pair_var
+                        mean, var, counts = (np.array(attr) for attr in self.tree.gather(("mean","reward"), ("var","reward"), "counts"))
+                        new_loss, self._current_pair_diff, self._current_pair_var = self.preference_loss(mean, var, counts)
+                        # if not self.P["split_by_variance"]: assert np.isclose(max(node.all_qual[node.split_dim]), self._current_loss - new_loss)
+                        self._current_loss = new_loss
+                        # NOTE: Empty split cache and recompute queue; necessary because split quality is not local
+                        if not self.P["split_by_variance"]: self.tree._compute_split_queue()
+                        # Append to history
+                        history_split.append([self.m,
+                            self._current_loss[0],                                     # Preference loss
+                            sum(self.tree.gather(("var_sum", "reward"))) / num_samples # Proxy loss: variance
+                            ])
+                        pbar.update(1)
         # Wipe _current variables for safety; prevents further splitting except by calling this method
         self._current_loss, self._current_pair_diff, self._current_pair_var = None, None, None
         # Greedily prune one leaf at a time until tree is back to the root
@@ -266,8 +267,7 @@ class RewardTree:
             pair_diff += self._current_pair_diff - pair_diff[0]
             pair_var = np.maximum(pair_var + self._current_pair_var - pair_var[0], 0) # Clip at zero
         pair_var[np.logical_and(pair_diff == 0, pair_var == 0)] = 1 # Handle 0/0 case
-        with np.errstate(divide="ignore"):
-            y_pred = norm_s.cdf(pair_diff / np.sqrt(pair_var)) # Div/0 is fine
+        y_pred = norm_s.cdf(pair_diff / np.sqrt(pair_var)) # Div/0 is fine
         # Robust cross-entropy loss (https://stackoverflow.com/a/50024648)
         loss = (-(xlogy(self._y, y_pred) + xlog1py(1 - self._y, -y_pred))).mean(axis=1)
         assert not np.isnan(np.einsum("i->", loss))
