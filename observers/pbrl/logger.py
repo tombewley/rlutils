@@ -53,28 +53,28 @@ class Logger:
         _, ax = plt.subplots()
         ax.set_xlabel("Proxy (variance-based) loss"); ax.set_ylabel("True (preference) loss")
         for history_key in self.pbrl.model.history:
-            history_merge = self.pbrl.model.history[history_key]["merge"]
-            plt.scatter([lp for _,_,_,_,lp in history_merge], [lt for _,_,_,lt,_ in history_merge], s=3, label=history_key)
+            history_prune = self.pbrl.model.history[history_key]["prune"]
+            plt.scatter([lp for _,_,_,_,lp in history_prune], [lt for _,_,_,lt,_ in history_prune], s=3, label=history_key)
         plt.legend()
 
     def plot_loss_vs_m(self, history_key):
-        """Loss as a function of m over splitting/merging sequence."""
+        """Loss as a function of m over splitting/pruning sequence."""
         _, ax1 = plt.subplots()
         ax1.set_xlabel("Number of components (m)"); ax1.set_ylabel("True (preference) loss")
         ax2 = ax1.twinx()
         ax2.set_ylabel("Proxy (variance-based) loss")
         ax2.yaxis.label.set_color("b")
         m_range_split, loss_split, proxy_split = np.array(self.pbrl.model.history[history_key]["split"]).T
-        m_range_merge, loss_merge, proxy_merge = np.array(self.pbrl.model.history[history_key]["merge"]).T
+        m_range_prune, loss_prune, proxy_prune = np.array(self.pbrl.model.history[history_key]["prune"]).T
         m_final = self.pbrl.model.history[history_key]["m"]
-        loss_m_final = loss_merge[np.argwhere(m_range_merge == m_final)[0]]
+        loss_m_final = loss_prune[np.argwhere(m_range_prune == m_final)[0]]
         ax1.plot(m_range_split, loss_split, c="k", ls="--")
-        ax1.plot(m_range_merge, loss_merge, c="k")
+        ax1.plot(m_range_prune, loss_prune, c="k")
         ax1.scatter(m_final, loss_m_final, c="g")
         ax2.plot(m_range_split, proxy_split, c="b", ls="--")
-        ax2.plot(m_range_merge, proxy_merge, c="b")
+        ax2.plot(m_range_prune, proxy_prune, c="b")
         # Regularisation line
-        m_lims = np.array([m_range_merge[0], m_range_merge[-1]])
+        m_lims = np.array([m_range_prune[0], m_range_prune[-1]])
         ax1.plot(m_lims, loss_m_final - self.pbrl.model.P["alpha"] * (m_lims - m_final), c="g", ls="--", zorder=-1)
         ax1.set_ylim(bottom=0); ax2.set_ylim(bottom=0)
 

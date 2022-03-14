@@ -15,7 +15,6 @@ bce_loss_no_red = torch.nn.BCELoss(reduction="none")
 
 
 # TODO: Split models out into separate files
-# TODO: Generic model for others to inherit from
 
 
 class RewardNet:
@@ -98,7 +97,6 @@ class RewardTree:
             root=root, 
             split_dims=space.idxify(feature_names), 
             eval_dims=space.idxify(["reward"]),
-            qual_func=self._split_qual_func
             )
         self.r = torch.zeros(self.m, device=self.device)
         self.var = torch.zeros(self.m, device=self.device) 
@@ -120,11 +118,11 @@ class RewardTree:
 
     def update(self, history_key, features, ep_lengths, A, i_list, j_list, y, reset_tree=True):
         """
-        If reset_tree=True, tree is first pruned back to its root (i.e. start from scratch).
+        Update the tree-structured reward function given a preference dataset.
+        If reset_tree=True, the tree is first pruned back to its root (i.e. start from scratch).
         """
         # Store private variables for this update and perform verification
-        self._i_list, self._j_list, self._y = i_list, j_list, y
-        self._num_eps = len(ep_lengths)
+        self._num_eps, self._i_list, self._j_list, self._y,  = len(ep_lengths), i_list, j_list, y
         assert A.shape == (len(self._i_list), self._num_eps)
         assert len(features) == sum(ep_lengths)
         # Compute fitness estimates for connected episodes, and apply uniform temporal prior to obtain reward targets
@@ -138,6 +136,8 @@ class RewardTree:
             features.cpu().numpy()                             
             ))
         if reset_tree: self.tree.prune_to(self.tree.root) 
+        # NOTE: If we don't reiterate this on each update we get a weird bug of old self._attributes being referenced
+        if not self.P["split_by_variance"]: self.tree.qual_func=self._split_qual_func
         self.tree.populate()
         num_samples = len(self.tree.space.data)
         # Store per-episode counts for each node of the tree
@@ -145,8 +145,8 @@ class RewardTree:
         self.tree.root.counts = np.array(ep_lengths)
         self.tree.root.proxy_qual = {}
         # Calculate loss, pair_diff and pair_var for the initial state of the tree
-        mean, var, counts = self.tree.gather(("mean","reward"), ("var","reward"), "counts")
-        self._current_loss, self._current_pair_diff, self._current_pair_var = self.preference_loss(np.array(mean), np.array(var), np.array(counts))
+        mean, var, counts = (np.array(attr) for attr in self.tree.gather(("mean","reward"), ("var","reward"), "counts"))
+        self._current_loss, self._current_pair_diff, self._current_pair_var = self.preference_loss(mean, var, counts)
         history_split = [[self.m, self._current_loss, sum(self.tree.gather(("var_sum", "reward"))) / num_samples]]
         # Perform best-first splitting until m_max is reached
         with tqdm(total=self.P["m_max"], initial=self.m, desc="Splitting") as pbar:
@@ -161,9 +161,9 @@ class RewardTree:
                     node.right.counts = node.counts - node.left.counts
                     node.left.proxy_qual, node.right.proxy_qual = {}, {}
                     # Calculate new loss, pair_diff and pair_var
-                    mean, var, counts = self.tree.gather(("mean","reward"), ("var","reward"), "counts")
-                    new_loss, self._current_pair_diff, self._current_pair_var = self.preference_loss(np.array(mean), np.array(var), np.array(counts))
-                    # if self.P["loss"] == "preference": assert np.isclose(max(node.all_qual[node.split_dim]), self._current_loss - new_loss)
+                    mean, var, counts = (np.array(attr) for attr in self.tree.gather(("mean","reward"), ("var","reward"), "counts"))
+                    new_loss, self._current_pair_diff, self._current_pair_var = self.preference_loss(mean, var, counts)
+                    if not self.P["split_by_variance"]: assert np.isclose(max(node.all_qual[node.split_dim]), self._current_loss - new_loss)
                     self._current_loss = new_loss
                     # Append to history
                     history_split.append([self.m,
@@ -173,64 +173,51 @@ class RewardTree:
                     # NOTE: Empty split cache and recompute queue; necessary because split quality is not local
                     self.tree._compute_split_queue()
                     pbar.update(1)
-
-        """
-        TODO: Pruning
-        Linearity of MCCP does *not* hold for preference loss, so cannot rely on weakest link pruning
-        Instead, be more conservative and only prune one leaf at a time, 
-        greedily picking the one that yields the smallest reduction in preference loss
-        """
-        
-        history_merge = [history_split[-1]]
-        if False:
-            # Perform minimal cost complexity pruning until labelling loss is minimised.
-            ep_features = torch.split(features, ep_lengths)
-            N = torch.vstack([self.n(f) for f in ep_features])
-            tree_before_merge = self.tree.clone()                
-            parent_num, pruned_nums = None, None
-            with tqdm(total=self.P["m_max"], initial=self.m, desc="Merging") as pbar:
-                while True: 
-                    # Measure loss.
-                    r, var, var_sum = self.tree.gather(("mean","reward"),("var","reward"),("var_sum","reward"))
-                    r, var = torch.tensor(r, device=self.device).float(), torch.tensor(var, device=self.device).float()
-                    history_merge.append([self.m, parent_num, pruned_nums,
-                        labelling_loss(A, y, N, r, var, self.P["p_clip"]).item(), # True labelling loss.
-                        sum(var_sum) / num_samples # Proxy loss: variance.
-                        ])
-                    if self.m <= self.P["m_stop_merge"]: break
-                    # Perform prune.
-                    parent_num, pruned_nums = self.tree.prune_mccp()
-                    pbar.update(-1)
-                    # Efficiently update N array (NOTE: relies on pruned_nums being consecutive and ordered)
-                    assert pruned_nums[-1] == pruned_nums[0] + len(pruned_nums)-1
-                    N[:,pruned_nums[0]] = N[:,pruned_nums].sum(axis=1)
-                    N = torch.cat((N[:,:pruned_nums[1]], N[:,pruned_nums[-1]+1:]), axis=1)
-                    if False: assert (N == torch.vstack([self.n(f) for f in ep_features])).all() # Sense check.     
-            # Now prune to minimum-loss size.
-            # NOTE: Size regularisation applied here; use reversed list to ensure *last* occurrence returned.
-            optimum = (len(history_merge)-1) - np.argmin([l + (self.P["alpha"] * m) for m,_,_,l,_ in reversed(history_merge)]) 
-            self.tree = tree_before_merge # Reset to pre-merging stage.
-            for _, parent_num, pruned_nums_prev, _, _ in history_merge[:optimum+1]: 
-                if parent_num is None: continue # First entry of history_merge will have this.
-                pruned_nums = self.tree.prune_to(self.tree._get_nodes()[parent_num])
-                assert set(pruned_nums_prev) == set(pruned_nums)
-
-        # history_split, history_merge = split_merge_cancel(history_split, history_merge)
-        self.history[history_key] = {"split": history_split, "merge": history_merge, "m": self.m}
-
-        # Delete _current variables for safety; prevents further splitting except by calling this method
-        del self._current_loss, self._current_pair_diff, self._current_pair_var
-
+        # Wipe _current variables for safety; prevents further splitting except by calling this method
+        self._current_loss, self._current_pair_diff, self._current_pair_var = None, None, None
+        # Greedily prune one leaf at a time until tree is back to the root
+        tree_before_prune = self.tree.clone()
+        history_prune = [history_split[-1]]
+        prune_indices = []
+        mean, var, counts = (np.array(attr) for attr in self.tree.gather(("mean","reward"), ("var","reward"), "counts"))
+        with tqdm(total=self.P["m_max"], initial=self.m, desc="Merging") as pbar:
+            while self.m > 1:
+                prune_candidates = []
+                for i in range(self.m - 1):
+                    left, right = self.tree.leaves[i:i+2]
+                    if left.parent is right.parent:
+                        m = np.delete(mean,   i, axis=0); m[i] = left.parent.mean[1] # NOTE: Assumes reward is dim 1
+                        v = np.delete(var,    i, axis=0); v[i] = left.parent.cov[1,1]
+                        c = np.delete(counts, i, axis=0); c[i] = left.parent.counts
+                        loss, _, _ = self.preference_loss(m, v, c)
+                        prune_candidates.append((i, m, v, c, loss))
+                x, mean, var, counts, loss = sorted(prune_candidates, key=lambda cand: cand[4])[0]
+                assert self.tree.prune_to(self.tree.leaves[x].parent) == {x, x+1}
+                prune_indices.append(x)
+                history_prune.append([self.m,
+                    loss,                                                      # Preference loss
+                    sum(self.tree.gather(("var_sum", "reward"))) / num_samples # Proxy loss: variance
+                    ])
+                pbar.update(1)
+        # Restore the subtree in the pruning sequence with minimum size-regularised loss
+        self.tree = tree_before_prune
+        # NOTE: Using reversed list to ensure *last* occurrence returned
+        optimum = (len(history_prune)-1) - np.argmin([l + (self.P["alpha"] * m) for m,l,_ in reversed(history_prune)])
+        for x in prune_indices[:optimum]:
+            assert self.tree.prune_to(self.tree.leaves[x].parent) == {x, x+1}
+        # Log split/merge history and store component means and variances in PyTorch form
+        self.history[history_key] = {"split": history_split, "prune": history_prune, "m": self.m}
         self.compute_r_and_var()
+        self._num_eps, self._i_list, self._j_list, self._y = None, None, None, None
         print(self.tree.space)
         print(self.tree)
         print(self.rules(self.tree, pred_dims="reward", sf=5))#, out_name="tree_func"))
 
     def _split_qual_func(self, node, split_dim, _, valid_split_indices): 
         """
-        NOTE: Assumes ep nums and rewards are in dimensions 0 and 1 of node.space.data respectively.
+        Evaluate the quality of all valid splits of node along split_dim.
         """
-        ep_nums, rewards = node.space.data[node.sorted_indices[:,split_dim][:,None], [0,1]].T 
+        ep_nums, rewards = node.space.data[node.sorted_indices[:,split_dim][:,None], [0,1]].T # NOTE: ep nums/rewards must be dims 0/1
         ep_nums = np.rint(ep_nums).astype(int)
         max_num_left = valid_split_indices[-1] + 1 # +1 needed
         mean = np.zeros((2, max_num_left))
@@ -248,18 +235,17 @@ class RewardTree:
             counts[:,num_left] = counts[:,num_left-1] # Copy
             counts[0,num_left,ep_num] = counts[0,num_left-1,ep_num] + 1 # Update
             counts[1,num_left,ep_num] = counts[1,num_left-1,ep_num] - 1 
-        
-        assert (counts.sum(axis=0) == counts[1,0]).all()
+        node.proxy_qual[split_dim] = var_sum[1,0] - var_sum[:,valid_split_indices].sum(axis=0)
         num_range[0,0] = 1 # Prevent div/0 warning
         loss, _, _ = self.preference_loss(mean, var_sum / num_range, counts, split_mode=True)
-
-        node.proxy_qual[split_dim] = var_sum[1,0] - var_sum[:,valid_split_indices].sum(axis=0)
-        if self.P["loss"] == "variance":     return node.proxy_qual[split_dim]
-        elif self.P["loss"] == "preference": return self._current_loss - loss[valid_split_indices]
+        return self._current_loss - loss[valid_split_indices]
 
     def preference_loss(self, mean, var, counts, split_mode=False):
         """
-        xxx
+        Compute preference loss given vectors of per-component means and variances,
+        and a matrix of counts for each episode-component pair. In split mode, these arrays each
+        have an additional dimension (all possible split locations) but only two rows (left and right),
+        and we need to add self._current_pair_diff and self._current_pair_var to compute the global loss.
         """
         assert mean.shape[0] == var.shape[0] == counts.shape[0]
         if split_mode: 
