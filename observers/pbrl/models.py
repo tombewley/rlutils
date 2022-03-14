@@ -162,7 +162,7 @@ class RewardTree:
                     # Calculate new loss, pair_diff and pair_var
                     mean, var, counts = (np.array(attr) for attr in self.tree.gather(("mean","reward"), ("var","reward"), "counts"))
                     new_loss, self._current_pair_diff, self._current_pair_var = self.preference_loss(mean, var, counts)
-                    if not self.P["split_by_variance"]: assert np.isclose(max(node.all_qual[node.split_dim]), self._current_loss - new_loss)
+                    # if not self.P["split_by_variance"]: assert np.isclose(max(node.all_qual[node.split_dim]), self._current_loss - new_loss)
                     self._current_loss = new_loss
                     # Append to history
                     history_split.append([self.m,
