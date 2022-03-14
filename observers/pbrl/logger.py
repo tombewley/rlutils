@@ -16,8 +16,8 @@ class Logger:
             if "loss_correlation" in self.P["plots"]: 
                 self.plot_loss_correlation()
                 plt.savefig(f"{path}/loss_correlation_{history_key}.png")
-            if "tree_loss_over_merge" in self.P["plots"]: 
-                self.plot_loss_over_merge(history_key)
+            if "tree_loss_vs_m" in self.P["plots"]:
+                self.plot_loss_vs_m(history_key)
                 plt.savefig(f"{path}/loss_{history_key}.png")
             if "tree_diagram" in self.P["plots"]: 
                 model.diagram(model.tree, pred_dims=["reward"], verbose=True, out_name=f"{path}/tree_{history_key}", out_as="png")
@@ -51,30 +51,32 @@ class Logger:
     def plot_loss_correlation(self):
         """Correlation between true and proxy loss."""
         _, ax = plt.subplots()
-        ax.set_xlabel("Proxy (variance-based) loss"); ax.set_ylabel("True (labelling) loss")
+        ax.set_xlabel("Proxy (variance-based) loss"); ax.set_ylabel("True (preference) loss")
         for history_key in self.pbrl.model.history:
-            history_merge = self.pbrl.model.history[history_key]["merge"]
-            plt.scatter([lp for _,_,_,_,lp in history_merge], [lt for _,_,_,lt,_ in history_merge], s=3, label=history_key)
+            history_prune = self.pbrl.model.history[history_key]["prune"]
+            plt.scatter([lp for _,_,_,_,lp in history_prune], [lt for _,_,_,lt,_ in history_prune], s=3, label=history_key)
         plt.legend()
 
-    def plot_loss_over_merge(self, history_key):
-        """Loss as a function of m over merging sequence."""
-        history_merge, m = self.pbrl.model.history[history_key]["merge"], self.pbrl.model.history[history_key]["m"]
-        m_range = [mm for mm,_,_,_,_ in history_merge]
-        loss_m = history_merge[m_range.index(m)][3]
+    def plot_loss_vs_m(self, history_key):
+        """Loss as a function of m over splitting/pruning sequence."""
         _, ax1 = plt.subplots()
-        ax1.set_xlabel("Number of components (m)"); ax1.set_ylabel("True (labelling) loss")
-        ax1.plot(m_range, [l for _,_,_,l,_ in history_merge], c="k") 
-        ax1.scatter(m, loss_m, c="g") 
-        # Regularisation line
-        m_lims = np.array([m_range[0], m_range[-1]])
-        ax1.plot(m_lims, loss_m - self.pbrl.model.P["alpha"] * (m_lims - m), c="g", ls="--", zorder=-1) 
-        ax1.set_ylim(bottom=0)
+        ax1.set_xlabel("Number of components (m)"); ax1.set_ylabel("True (preference) loss")
         ax2 = ax1.twinx()
         ax2.set_ylabel("Proxy (variance-based) loss")
         ax2.yaxis.label.set_color("b")
-        ax2.plot(m_range, [l for _,_,_,_,l in history_merge], c="b") 
-        ax2.set_ylim(bottom=0)
+        m_range_split, loss_split, proxy_split = np.array(self.pbrl.model.history[history_key]["split"]).T
+        m_range_prune, loss_prune, proxy_prune = np.array(self.pbrl.model.history[history_key]["prune"]).T
+        m_final = self.pbrl.model.history[history_key]["m"]
+        loss_m_final = loss_prune[np.argwhere(m_range_prune == m_final)[0]]
+        ax1.plot(m_range_split, loss_split, c="k", ls="--")
+        ax1.plot(m_range_prune, loss_prune, c="k")
+        ax1.scatter(m_final, loss_m_final, c="g")
+        ax2.plot(m_range_split, proxy_split, c="b", ls="--")
+        ax2.plot(m_range_prune, proxy_prune, c="b")
+        # Regularisation line
+        m_lims = np.array([m_range_prune[0], m_range_prune[-1]])
+        ax1.plot(m_lims, loss_m_final - self.pbrl.model.P["alpha"] * (m_lims - m_final), c="g", ls="--", zorder=-1)
+        ax1.set_ylim(bottom=0); ax2.set_ylim(bottom=0)
 
     def plot_Pr_matrix(self):
         """Binary matrix showing which comparisons have been made."""
