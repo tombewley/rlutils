@@ -73,7 +73,7 @@ class PbrlObserver:
         transitions = torch.cat([states, actions, next_states], dim=1)
         if self.P["reward_source"] == "oracle": # NOTE: Oracle defined over raw transitions rather than features
             assert not return_params, "Oracle doesn't use normal distribution parameters"
-            return torch.tensor(self.interface.oracle(transitions), device=self.device)
+            return self.interface.oracle(transitions)
         else:
             mu, _, std = self.model(self.feature_map(transitions))        
         if "rune_coef" in self.P: return mu + self.P["rune_coef"] * std
@@ -168,7 +168,7 @@ class PbrlObserver:
         if self.P["reward_source"] == "model": 
             logs["reward_sum_model"], _ = self.fitness(self._current_ep)
         if self.interface is not None and self.interface.oracle is not None: 
-            logs["reward_sum_oracle"] = sum(self.interface.oracle(self._current_ep))
+            logs["reward_sum_oracle"] = sum(self.interface.oracle(self._current_ep)).item()
         # Retain episodes for use in reward inference with a specified frequency
         if self._observing and (ep+1) % self.P["observe_freq"] == 0: 
             self.episodes.append(self._current_ep); n = len(self.episodes)
