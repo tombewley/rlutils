@@ -64,7 +64,7 @@ class PbrlObserver:
         if self.features is None: return transitions
         return torch.cat([self.features[f](transitions).reshape(-1,1) for f in self.feature_names], dim=1)
 
-    def reward(self, states, actions=None, next_states=None, transitions=None, return_params=False):
+    def reward(self, states, actions, next_states, return_params=False):
         """
         Reward function, defined over individual transitions (s,a,s').
         """

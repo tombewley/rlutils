@@ -24,11 +24,12 @@ class SimpleModelBasedAgent(Agent):
         # Create model network.
         if len(self.env.observation_space.shape) > 1: raise NotImplementedError()
         else: self.state_dim, action_dim = self.env.observation_space.shape[0], (self.env.action_space.shape[0] if self.continuous_actions else 1) 
-        self.model = SequentialNetwork(code=self.P["net_model"], input_shape=self.state_dim+action_dim, output_size=self.state_dim*(2 if self.P["probabilistic"] else 1), lr=self.P["lr_model"], device=self.device)
+        self.model = SequentialNetwork(code=self.P["net_model"], input_shape=self.state_dim+action_dim,
+                     output_size=self.state_dim*(2 if self.P["probabilistic"] else 1), lr=self.P["lr_model"], device=self.device)
         # Create replay memory in two components: one for random transitions one for on-policy transitions.
         self.random_memory = ReplayMemory(self.P["num_random_steps"])
         # NOTE: Currently MBRL-Lib says fixed bounds "work better" than learnt ones. Using values from there (note std instead of var).
-        if self.P["probabilistic"]: self.log_std_clamp = (None,) # ("soft", -20, 2)
+        if self.P["probabilistic"]: self.log_std_clamp = ("hard", -20, 2) # ("soft", -20, 2)
         if not self.P["random_mode_only"]:
             self.memory = ReplayMemory(self.P["replay_capacity"])
             self.batch_split = (round(self.P["batch_size"] * self.P["batch_ratio"]), round(self.P["batch_size"] * (1-self.P["batch_ratio"])))
@@ -41,14 +42,14 @@ class SimpleModelBasedAgent(Agent):
         """Either random or model-based action selection."""
         with torch.no_grad():
             extra = {}
-            if self.random_mode: action = torch.tensor([self.env.action_space.sample()])
+            if self.random_mode: action = torch.tensor(self.env.action_space.sample())
             else: 
                 returns, first_actions = self.rollout(state)
                 best_rollout = np.argmax(returns)
                 action = first_actions[best_rollout]
                 if do_extra: extra["g_pred"] = returns[best_rollout]
-            if do_extra: extra["next_state_pred"] = self.predict(state, action)[0].cpu().numpy()
-            return action[0].cpu().numpy() if self.continuous_actions else action.item(), extra
+            if do_extra: extra["next_state_pred"] = self.predict(state, action.unsqueeze(0))[0].cpu().numpy()
+            return action.cpu().numpy() if self.continuous_actions else action.item(), extra
 
     def predict(self, states, actions, params=False):
         """Use model to predict the next state for an array of state-action pairs."""
@@ -104,16 +105,16 @@ class SimpleModelBasedAgent(Agent):
         del self.ep_losses[:]
         return {"model_loss": mean_loss, "random_mode": int(self.random_mode)}
 
-    def rollout(self, state): 
-        """Use model and reward function to generate and evaluate rollouts with random action selection.
-        Then select the first action from the rollout with maximum return."""
-        returns = []; first_actions = []
-        for _ in range(self.P["num_rollouts"]):
-            rollout_state, rollout_return = state.clone().to(self.device), 0
-            for t in range(self.P["rollout_horizon"]):
-                rollout_action = torch.tensor([self.env.action_space.sample()]) # Random action selection.
-                if t == 0: first_actions.append(rollout_action)       
-                rollout_state = self.predict(rollout_state, rollout_action)
-                rollout_return += (self.P["gamma"] ** t) * self.P["reward"](rollout_state, rollout_action)           
-            returns.append(rollout_return)
-        return returns, first_actions    
+    def rollout(self, state_init):
+        """Use model and reward function to generate and evaluate rollouts with random action selection."""
+        states = torch.cat([state_init for _ in range(self.P["num_rollouts"])])
+        actions = torch.tensor(np.array([[self.env.action_space.sample()
+                    for _ in range(self.P["num_rollouts"])]
+                    for _ in range(self.P["rollout_horizon"])]),
+                    device=self.device)
+        returns = torch.zeros(self.P["num_rollouts"], device=self.device)
+        for t in range(self.P["rollout_horizon"]):
+            next_states = self.predict(states, actions[t])
+            returns += (self.P["gamma"] ** t) * self.P["reward"](states, actions[t], next_states)
+            states = next_states
+        return returns, actions[0]
