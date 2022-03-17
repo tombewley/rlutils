@@ -88,8 +88,10 @@ class RewardTree:
         import hyperrectangles as hr
         self.rules, self.diagram, self.rectangles, self.show_split_quality = \
         hr.rules, hr.diagram, hr.show_rectangles, hr.show_split_quality
-        from hyperrectangles.utils import increment_mean_and_var_sum
-        self.increment_mean_and_var_sum = increment_mean_and_var_sum
+        if not self.P["split_by_variance"]:
+            raise NotImplementedError()
+            from hyperrectangles.utils import increment_mean_and_var_sum
+            self.increment_mean_and_var_sum = increment_mean_and_var_sum
         # ===================
         self.device = device
         self.P = P
