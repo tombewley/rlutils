@@ -160,13 +160,15 @@ class PbrlObserver:
             
     def per_episode(self, ep): 
         """
-        NOTE: To ensure video saving, this is completed *after* env.reset() is called for the next episode.
+        Operations to complete at the end of an episode, which may include storing self._current_ep
+        in self.episodes, creating logs, and (if self._online==True), occasionally gathering
+        a preference batch and updating the reward function.
         """   
         self._current_ep = torch.tensor(self._current_ep, device=self.device).float() # Convert to tensor once appending finished
         logs = {}
         # Log reward sums
         if self.P["reward_source"] == "model": 
-            logs["reward_sum_model"], _ = self.fitness(self._current_ep)
+            logs["reward_sum_model"] = self.fitness(self._current_ep)[0].item()
         if self.interface is not None and self.interface.oracle is not None: 
             logs["reward_sum_oracle"] = sum(self.interface.oracle(self._current_ep)).item()
         # Retain episodes for use in reward inference with a specified frequency
