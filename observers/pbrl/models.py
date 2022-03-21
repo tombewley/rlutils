@@ -88,10 +88,6 @@ class RewardTree:
         import hyperrectangles as hr
         self.rules, self.diagram, self.rectangles, self.show_split_quality = \
         hr.rules, hr.diagram, hr.show_rectangles, hr.show_split_quality
-        if not P["split_by_variance"]:
-            raise NotImplementedError()
-            from hyperrectangles.utils import increment_mean_and_var_sum
-            self.increment_mean_and_var_sum = increment_mean_and_var_sum
         # ===================
         self.device = device
         self.P = P
@@ -141,7 +137,7 @@ class RewardTree:
             ))
         if reset_tree: self.tree.prune_to(self.tree.root) 
         # NOTE: If we don't reiterate this on each update we get a weird bug of old self._attributes being referenced
-        if not self.P["split_by_variance"]: self.tree.qual_func=self._split_qual_func
+        if not self.P["split_by_variance"]: self.tree.split_finder=self.preference_based_split_finder
         self.tree.populate()
         num_samples = len(self.tree.space.data)
         # Store per-episode counts for each node of the tree
@@ -218,32 +214,76 @@ class RewardTree:
         print(self.rules(self.tree, pred_dims="reward", sf=5))#, out_name="tree_func"))
         return {"preference_loss": history_prune[optimum][1], "num_leaves": self.m}
 
-    def _split_qual_func(self, node, split_dim, _, valid_split_indices): 
+    def preference_based_split_finder(self, node, split_dims, _, min_samples_leaf, __):
         """
         Evaluate the quality of all valid splits of node along split_dim.
         """
-        ep_nums, rewards = node.space.data[node.sorted_indices[:,split_dim][:,None], [0,1]].T # NOTE: ep nums/rewards must be dims 0/1
+        # Gather attributes from the node (NOTE: ep nums/rewards must be dims 0/1)
+        ep_nums, rewards = np.moveaxis(node.space.data[node.sorted_indices[:,split_dims][:,:,None],[0,1]], 2, 0)
         ep_nums = np.rint(ep_nums).astype(int)
-        max_num_left = valid_split_indices[-1] + 1 # +1 needed
-        mean = np.zeros((2, max_num_left))
-        var_sum = mean.copy()
-        mean[1,0] = node.mean[1] 
-        var_sum[1,0] = node.var_sum[1]
-        counts = np.zeros((2, max_num_left, self._num_eps), dtype=int)
-        counts[1,0] = node.counts
-        num_left_range = np.arange(max_num_left)
-        num_range = np.stack((num_left_range, node.num_samples - num_left_range), axis=0)
-        for num_left, num_right in num_range[:,1:].T:
-            ep_num, reward = ep_nums[num_left-1], rewards[num_left-1]
-            mean[0,num_left], var_sum[0,num_left] = self.increment_mean_and_var_sum(num_left,  mean[0,num_left-1], var_sum[0,num_left-1], reward, 1)
-            mean[1,num_left], var_sum[1,num_left] = self.increment_mean_and_var_sum(num_right, mean[1,num_left-1], var_sum[1,num_left-1], reward, -1)                    
-            counts[:,num_left] = counts[:,num_left-1] # Copy
-            counts[0,num_left,ep_num] = counts[0,num_left-1,ep_num] + 1 # Update
-            counts[1,num_left,ep_num] = counts[1,num_left-1,ep_num] - 1 
-        node.proxy_qual[split_dim] = var_sum[1,0] - var_sum[:,valid_split_indices].sum(axis=0)
-        num_range[0,0] = 1 # Prevent div/0 warning
-        loss, _, _ = self.preference_loss(mean, var_sum / num_range, counts, split_mode=True)
-        return self._current_loss - loss[valid_split_indices]
+        parent_mean = node.mean[1]
+        parent_var_sum = node.var_sum[1]
+        parent_num_samples = node.num_samples
+        parent_counts = node.counts
+        split_data = node.space.data[node.sorted_indices[:,split_dims],split_dims]
+        split_indices, quals = self._pbsf_inner(split_data, ep_nums, rewards, min_samples_leaf,
+                               parent_mean, parent_var_sum, parent_num_samples, parent_counts)
+        splits = []
+        for split_dim, split_index, qual in zip(split_dims, split_indices, quals):
+            if not np.isnan(qual): splits.append((split_dim, split_index, qual))
+        return splits, np.array([])
+
+    def _pbsf_inner(self, split_data, ep_nums, rewards, min_samples_leaf, parent_mean, parent_var_sum, parent_num_samples, parent_counts):
+        """
+        TODO: numba.jit
+        """
+        def increment_mean_and_var_sum(n, mean, var_sum, x, sign):
+            """
+            Welford's online algorithm for incremental sum-of-variance computation,
+            adapted from https://fanf2.user.srcf.net/hermes/doc/antiforgery/stats.pdf
+            """
+            d_last = x - mean
+            mean = mean + (sign * (d_last / n)) # Can't do += because this modifies the NumPy array in place!
+            d = x - mean
+            var_sum = var_sum + (sign * (d_last * d))
+            return mean, np.maximum(var_sum, 0) # Clip at zero
+        num_split_dims = split_data.shape[1]
+        greedy_split_indices = np.full(num_split_dims, np.nan, dtype=np.int32)
+        greedy_quals = np.full(num_split_dims, np.nan)
+        for d in range(num_split_dims):
+            # Apply two kinds of constraint to the split points:
+            #   (1) Must be a "threshold" point where the samples either side do not have equal values
+            valid_split_indices = np.where(split_data[1:,d] - split_data[:-1,d])[0] + 1 # NOTE: 0 will not be included
+            #   (2) Must obey min_samples_leaf
+            mask = np.logical_and(valid_split_indices >= min_samples_leaf, valid_split_indices <= parent_num_samples-min_samples_leaf)
+            valid_split_indices = valid_split_indices[mask]
+            # Cannot split on a dim if there are no valid split points
+            if len(valid_split_indices) == 0: continue
+            max_num_left = valid_split_indices[-1] + 1 # +1 needed
+            mean = np.zeros((2, max_num_left))
+            var_sum = mean.copy()
+            mean[1,0] = parent_mean
+            var_sum[1,0] = parent_var_sum
+            counts = np.zeros((2, max_num_left, self._num_eps), dtype=int)
+            counts[1,0] = parent_counts
+            num_left_range = np.arange(max_num_left)
+            num_range = np.stack((num_left_range, parent_num_samples - num_left_range), axis=0)
+            for num_left, num_right in num_range[:,1:].T:
+                ep_num, reward = ep_nums[num_left-1,d], rewards[num_left-1,d]
+                mean[0,num_left], var_sum[0,num_left] = increment_mean_and_var_sum(num_left,  mean[0,num_left-1], var_sum[0,num_left-1], reward, 1)
+                mean[1,num_left], var_sum[1,num_left] = increment_mean_and_var_sum(num_right, mean[1,num_left-1], var_sum[1,num_left-1], reward, -1)
+                counts[:,num_left] = counts[:,num_left-1] # Copy
+                counts[0,num_left,ep_num] = counts[0,num_left-1,ep_num] + 1 # Update
+                counts[1,num_left,ep_num] = counts[1,num_left-1,ep_num] - 1
+            # node.proxy_qual[split_dims[d]] = var_sum[1,0] - var_sum[:,valid_split_indices].sum(axis=0)
+            num_range[0,0] = 1 # Prevent div/0 warning
+            loss, _, _ = self.preference_loss(mean, var_sum / num_range, counts, split_mode=True)
+            qual = self._current_loss - loss[valid_split_indices]
+            # Greedy split is the one with the highest quality
+            greedy = np.argmax(qual)
+            greedy_split_indices[d] = valid_split_indices[greedy]
+            greedy_quals[d] = qual[greedy]
+        return greedy_split_indices, greedy_quals
 
     def preference_loss(self, mean, var, counts, split_mode=False):
         """
