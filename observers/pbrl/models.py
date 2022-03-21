@@ -58,12 +58,12 @@ class RewardNet:
             F_pred, var_pred = torch.zeros(n_train, device=self.device), torch.zeros(n_train, device=self.device)
             for i in range(n_train):
                 if in_batch[i]: F_pred[i], var_pred[i] = self.fitness(features=ep_features[i])
-            if self.P["preference_eqn"] == "thurstone": 
+            if self.P["preference_eqn"] == "thurstone":
                 pair_diff = A_batch @ F_pred
                 sigma = torch.sqrt(abs_A_batch @ var_pred)
                 y_pred = norm.cdf(pair_diff / sigma)
                 loss = bce_loss(y_pred, y_batch) # Binary cross-entropy loss, PEBBLE equation 4
-            elif self.P["preference_eqn"] == "bradley-terry": 
+            elif self.P["preference_eqn"] == "bradley-terry":
                 # https://github.com/rll-research/BPref/blob/f3ece2ecf04b5d11b276d9bbb19b8004c29429d1/reward_model.py#L142
                 F_pairs = torch.vstack([F_pred[pair] for pair in abs_A_batch.bool()])
                 log_y_pred = torch.nn.functional.log_softmax(F_pairs, dim=1)
@@ -136,7 +136,7 @@ class RewardTree:
         # Populate tree. 
         self.tree.space.data = np.hstack((
             # NOTE: Using index in connected list rather than pbrl.episodes
-            np.vstack([[[i, r]] * l for i, (r, l) in enumerate(zip(reward_target.cpu().numpy(), ep_lengths))]),
+            np.vstack([[[i, r]] * l for i, (r, l) in enumerate(zip(reward_target, ep_lengths))]),
             features.cpu().numpy()                             
             ))
         if reset_tree: self.tree.prune_to(self.tree.root) 
@@ -268,9 +268,19 @@ class RewardTree:
             pair_diff += self._current_pair_diff - pair_diff[0]
             pair_var = np.maximum(pair_var + self._current_pair_var - pair_var[0], 0) # Clip at zero
         pair_var[np.logical_and(pair_diff == 0, pair_var == 0)] = 1 # Handle 0/0 case
-        y_pred = norm_s.cdf(pair_diff / np.sqrt(pair_var)) # Div/0 is fine
-        # Robust cross-entropy loss (https://stackoverflow.com/a/50024648)
-        loss = (-(xlogy(self._y, y_pred) + xlog1py(1 - self._y, -y_pred))).mean(axis=1)
+        if self.P["preference_eqn"] == "thurstone":
+            y_pred = norm_s.cdf(pair_diff / np.sqrt(pair_var)) # Div/0 is fine
+        elif self.P["preference_eqn"] == "bradley-terry":
+            raise NotImplementedError()
+        if self.P["loss_func"] == "bce":
+            # Robust binary cross-entropy loss (https://stackoverflow.com/a/50024648)
+            loss = (-(xlogy(self._y, y_pred) + xlog1py(1 - self._y, -y_pred))).mean(axis=1)
+        elif self.P["loss_func"] == "0-1":
+            # Modified 0-1 loss with a central band reserved for "equal" class
+            y_shift, y_pred_shift = self._y - 0.5, y_pred - 0.5
+            y_sign =      np.sign(y_shift)      * (np.abs(y_shift) > 0.1)
+            y_pred_sign = np.sign(y_pred_shift) * (np.abs(y_pred_shift) > 0.1)
+            loss = np.abs(y_sign - y_pred_sign).mean(axis=1)
         assert not np.isnan(np.einsum("i->", loss))
         return loss, pair_diff[0], pair_var[0]
         
@@ -296,5 +306,6 @@ def fitness_case_v(A, y, p_clip):
     Uses Morrissey-Gulliksen least squares for incomplete comparison matrix.
     """
     d = norm.icdf(torch.clamp(y, p_clip, 1-p_clip)) # Clip to prevent infinite values
-    f, _, _, _ = torch.linalg.lstsq(A.T @ A, A.T @ d, rcond=None)
+    f = torch.linalg.lstsq(A.T @ A, A.T @ d, rcond=None)[0].cpu().numpy() # NOTE: NumPy implementation seems to be more stable
+    # f = np.linalg.lstsq((A.T @ A).cpu().numpy(), (A.T @ d).cpu().numpy(), rcond=None)[0]
     return f - f.max() # NOTE: Shift so that maximum fitness is zero (cost function)
