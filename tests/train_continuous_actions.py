@@ -1,35 +1,41 @@
 import gym
 import numpy as np
-import rlutils
+from rlutils import make, train
 from rlutils.common.env_wrappers import NormaliseActionWrapper
-from rlutils.specific.Pendulum import reward_function
+from rlutils.observers.observer import Observer
+
 
 train_parameters = {
-    # "project_name":         "pendulum",
-    # "env":                  "Pendulum-v0",
-    # "state_dims":           ["cos_theta","sin_theta","theta_dot"],
+    "project_name":         "pendulum",
+    "env":                  "Pendulum-v0",
+    "state_dims":           ["cos_theta","sin_theta","theta_dot"],
 
-    "project_name":         "mountaincar",
-    "env":                  "MountainCarContinuous-v0",
-    "state_dims":           ["pos","vel"],
+    # "project_name":         "mountaincar",
+    # "env":                  "MountainCarContinuous-v0",
+    # "state_dims":           ["pos","vel"],
 
-    "agent":                "diayn",
+    "agent":                "simple_model_based",
     "num_episodes":         1000,
     "episode_time_limit":   200,
     "from_pixels":          False,
-    "wandb_monitor":        True,
+    "wandb_monitor":        False,
     "render_freq":          0,
     "video_save_freq":      0,
     "video_to_wandb":       True,
     "observe_freq":         0,
-    "checkpoint_freq":      100,
+    "checkpoint_freq":      0,
 }
+
+if train_parameters["env"] == "Pendulum-v0":
+    from rlutils.specific.Pendulum import reward_function
 
 # Make environment.
 env = gym.make(train_parameters["env"]).unwrapped # Needed to impose custom time limit.
 
 if train_parameters["agent"] in ("ddpg","td3","sac","diayn","steve"):
     env = NormaliseActionWrapper(env) # Actions in [-1, 1]
+
+print(env.action_space.low, env.action_space.high)
 
 agent_parameters = {}
 agent_parameters["ddpg"] = {
@@ -61,19 +67,18 @@ agent_parameters["diayn"] = {
     "sac_parameters":       {"batch_size": 128, "alpha": 0.1, "tau": 0.01}
 }
 agent_parameters["simple_model_based"] = {
-    "random_mode_only":     False,
-    "reward_function":      reward_function,
+    "reward":               reward_function,
 }
 agent_parameters["steve"] = {
-    "reward_function":      reward_function,
+    "reward":               reward_function,
     "ddpg_parameters":      agent_parameters["td3"]
 }
 
 a = train_parameters["agent"]
-agent = rlutils.make(a, env, agent_parameters[a])
+agent = make(a, env, agent_parameters[a])
 print(agent)
-obs = rlutils.Observer(state_dims=train_parameters["state_dims"], action_dims=1)
-_, rn = rlutils.train(agent, train_parameters, observer=obs)
+obs = Observer(P={"save_freq": np.inf}, state_dims=train_parameters["state_dims"], action_dims=1)
+_, rn = train(agent, train_parameters, observers={"observer": obs})
 
 if train_parameters["observe_freq"]:
     obs.add_custom_dims(lambda x: np.array([np.arccos(x[2]) * np.sign(x[3])]), ["theta"])

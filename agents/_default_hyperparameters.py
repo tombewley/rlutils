@@ -103,6 +103,7 @@ default_hyperparameters = {
 
   "simple_model_based": {  
     "net_model": [(None, 32), "R", (32, 64), "R", (64, None)],
+    "probabilistic": True, # Whether or not dynamics models output standard deviations alongside means.
     "num_random_steps": 2000, # Size of random replay buffer (disables random mode when full).
     "batch_size": 256,
     "model_freq": 10, # Number of steps between model updates.
