@@ -112,9 +112,15 @@ default_hyperparameters = {
     # --- If not random_mode_only ---
     "replay_capacity": 2000, # Size of replay buffer (starts overwriting when full).
     "batch_ratio": 0.9, # Proportion of on-policy transitions.
-    "num_rollouts": 50,
-    "rollout_horizon": 20,
-    "gamma": 0.99 # Discount factor.
+    "planning": {
+      "num_iterations": 5,
+      "num_particles": 50,
+      "horizon": 20,
+      "gamma": 0.99, # Discount factor.
+      # --- If num_iterations > 1 ---
+      "num_elites": 10,
+      "alpha": 0.1, # Update rate for CEM sampling distribution.
+    }
   },
   
   "stable_baselines": { # NOTE: Other defaults specified in StableBaselines library.

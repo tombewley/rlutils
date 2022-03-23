@@ -15,10 +15,10 @@ train_parameters = {
     # "state_dims":           ["pos","vel"],
 
     "agent":                "simple_model_based",
-    "num_episodes":         1000,
+    "num_episodes":         100,
     "episode_time_limit":   200,
     "from_pixels":          False,
-    "wandb_monitor":        False,
+    "wandb_monitor":        True,
     "render_freq":          0,
     "video_save_freq":      0,
     "video_to_wandb":       True,
@@ -32,10 +32,7 @@ if train_parameters["env"] == "Pendulum-v0":
 # Make environment.
 env = gym.make(train_parameters["env"]).unwrapped # Needed to impose custom time limit.
 
-if train_parameters["agent"] in ("ddpg","td3","sac","diayn","steve"):
-    env = NormaliseActionWrapper(env) # Actions in [-1, 1]
-
-print(env.action_space.low, env.action_space.high)
+env = NormaliseActionWrapper(env) # Actions in [-1, 1]
 
 agent_parameters = {}
 agent_parameters["ddpg"] = {
@@ -68,6 +65,9 @@ agent_parameters["diayn"] = {
 }
 agent_parameters["simple_model_based"] = {
     "reward":               reward_function,
+    "probabilistic":        False,
+    "model_freq":           1,
+    "batch_size":           32, 
 }
 agent_parameters["steve"] = {
     "reward":               reward_function,

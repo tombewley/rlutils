@@ -1,35 +1,27 @@
 from ._generic import Agent
-from ..common.networks import SequentialNetwork
 from ..common.memory import ReplayMemory
-from ..common.utils import col_concat, reparameterise
+from ..common.dynamics import DynamicsModel
 
-import numpy as np
 import torch
 import torch.nn.functional as F
+from numpy import mean
 
 
 class SimpleModelBasedAgent(Agent):
+    """
+    Simple model-based agent for both discrete and continuous action spaces.
+    Adapted from the model-based component of the architecture from:
+        "Neural Network Dynamics for Model-Based Deep Reinforcement Learning with Model-Free Fine-Tuning"
+    """
     def __init__(self, env, hyperparameters):
-        """
-        Simple model-based agent for both discrete and continuous action spaces.
-        Optionally implements probabilistic dynamics using the reparameterisation trick.
-        Adapted from the model-based component of the architecture from:
-            "Neural Network Dynamics for Model-Based Deep Reinforcement Learning with Model-Free Fine-Tuning"
-        TODO: With discrete actions, better to have per-action output nodes rather than providing action integer as an input.
-        """
         assert "reward" in hyperparameters, f"{type(self).__name__} requires a reward function."
         Agent.__init__(self, env, hyperparameters)
-        # Establish whether action space is continuous or discrete.
-        self.continuous_actions = len(self.env.action_space.shape) > 0
-        # Create model network.
-        if len(self.env.observation_space.shape) > 1: raise NotImplementedError()
-        else: self.state_dim, action_dim = self.env.observation_space.shape[0], (self.env.action_space.shape[0] if self.continuous_actions else 1) 
-        self.model = SequentialNetwork(code=self.P["net_model"], input_shape=self.state_dim+action_dim,
-                     output_size=self.state_dim*(2 if self.P["probabilistic"] else 1), lr=self.P["lr_model"], device=self.device)
+        # Create dynamics model.
+        self.model = DynamicsModel(code=self.P["net_model"], observation_space=self.env.observation_space, action_space=self.env.action_space,
+                                   reward_function=self.P["reward"], probabilistic=self.P["probabilistic"], lr=self.P["lr_model"],
+                                   planning_params=self.P["planning"], device=self.device)
         # Create replay memory in two components: one for random transitions one for on-policy transitions.
         self.random_memory = ReplayMemory(self.P["num_random_steps"])
-        # NOTE: Currently MBRL-Lib says fixed bounds "work better" than learnt ones. Using values from there (note std instead of var).
-        if self.P["probabilistic"]: self.log_std_clamp = ("hard", -20, 2) # ("soft", -20, 2)
         if not self.P["random_mode_only"]:
             self.memory = ReplayMemory(self.P["replay_capacity"])
             self.batch_split = (round(self.P["batch_size"] * self.P["batch_ratio"]), round(self.P["batch_size"] * (1-self.P["batch_ratio"])))
@@ -41,28 +33,25 @@ class SimpleModelBasedAgent(Agent):
     def act(self, state, explore=True, do_extra=False):
         """Either random or model-based action selection."""
         with torch.no_grad():
+            do_extra=True
             extra = {}
-            if self.random_mode: action = torch.tensor(self.env.action_space.sample())
+            if self.random_mode: 
+                action = self.env.action_space.sample()
+                if do_extra: 
+                    action_torch = torch.tensor(action, device=self.device).unsqueeze(0)
+                    extra["next_state_pred"] = self.model.predict(state, action_torch)[0].cpu().numpy()
             else: 
-                returns, first_actions = self.rollout(state)
-                best_rollout = np.argmax(returns)
-                action = first_actions[best_rollout]
-                if do_extra: extra["g_pred"] = returns[best_rollout]
-            if do_extra: extra["next_state_pred"] = self.predict(state, action.unsqueeze(0))[0].cpu().numpy()
-            return action.cpu().numpy() if self.continuous_actions else action.item(), extra
-
-    def predict(self, states, actions, params=False):
-        """Use model to predict the next state for an array of state-action pairs."""
-        ds = self.model(col_concat(states, actions.unsqueeze(1) if len(actions.shape) == 1 else actions))
-        # If using a probabilistic dynamics model, simply need to employ the reparameterisation trick.
-        if self.P["probabilistic"]: 
-            if params: return reparameterise(ds, clamp=self.log_std_clamp, params=True) # Return mean and log standard deviation.
-            else: ds = reparameterise(ds, clamp=self.log_std_clamp).rsample() 
-        return states + ds
+                states, actions, returns, mean, std = self.model.plan(state)
+                best = torch.argmax(returns[-1]) # Look at final planning iteration only
+                action = actions[-1,best,0] # Take first action only
+                action = action.cpu().numpy() if self.model.continuous_actions else action.item()
+                if do_extra: 
+                    extra["g_pred"] = returns[-1,best].item()
+                    extra["next_state_pred"] = states[-1,best,1].cpu().numpy()
+            return action, extra
 
     def update_on_batch(self):
         """Use a random batch from the replay memory to update the model network parameters."""
-        # TODO: Batch normalisation of state dimensions.
         if self.random_mode: # During random mode, just sample from random memory.   
             states, actions, _, _, next_states = self.random_memory.sample(self.P["batch_size"], keep_terminal_next=True)
             if states is None: return 
@@ -76,14 +65,14 @@ class SimpleModelBasedAgent(Agent):
             next_states = torch.cat((next_states, next_states_r), dim=0)        
         if not self.P["probabilistic"]:
             # Update model in the direction of the true state derivatives using MSE loss.
-            loss = F.mse_loss(self.predict(states, actions), next_states)
+            loss = F.mse_loss(self.model.predict(states, actions), next_states)
         else:
             # Update model using Gaussian negative log likelihood loss (see PETS paper equation 1).
-            mu, log_std = self.predict(states, actions, params=True); log_var = 2 * log_std
+            mu, log_std = self.model.predict(states, actions, params=True); log_var = 2 * log_std
             loss = (F.mse_loss(states + mu, next_states, reduction="none") * (-log_var).exp() + log_var).mean() 
             # TODO: Add a small regularisation penalty to prevent growth of variance range.
             # loss += 0.01 * (self.max_log_var.sum() - self.min_log_var.sum()) 
-        self.model.optimise(loss)
+        self.model.net.optimise(loss)
         return loss.item()
 
     def per_timestep(self, state, action, reward, next_state, done):
@@ -96,25 +85,11 @@ class SimpleModelBasedAgent(Agent):
         self.total_t += 1
         if self.P["model_freq"] > 0 and self.total_t % self.P["model_freq"] == 0:
             loss = self.update_on_batch()
-            if loss: self.ep_losses.append(loss)
+            if loss is not None: self.ep_losses.append(loss)
 
     def per_episode(self):
         """Operations to perform on each episode end during training."""
-        if self.ep_losses: mean_loss = np.mean(self.ep_losses)
+        if self.ep_losses: mean_loss = mean(self.ep_losses)
         else: mean_loss = 0.
         del self.ep_losses[:]
         return {"model_loss": mean_loss, "random_mode": int(self.random_mode)}
-
-    def rollout(self, state_init):
-        """Use model and reward function to generate and evaluate rollouts with random action selection."""
-        states = torch.cat([state_init for _ in range(self.P["num_rollouts"])])
-        actions = torch.tensor(np.array([[self.env.action_space.sample()
-                    for _ in range(self.P["num_rollouts"])]
-                    for _ in range(self.P["rollout_horizon"])]),
-                    device=self.device)
-        returns = torch.zeros(self.P["num_rollouts"], device=self.device)
-        for t in range(self.P["rollout_horizon"]):
-            next_states = self.predict(states, actions[t])
-            returns += (self.P["gamma"] ** t) * self.P["reward"](states, actions[t], next_states)
-            states = next_states
-        return returns, actions[0]
