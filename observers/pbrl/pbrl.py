@@ -204,7 +204,7 @@ class PbrlObserver:
 # SAVING/LOADING
 
     def save(self, history_key):
-        path = f"logs/{self.run_names[-1]}"
+        path = f"models/{self.run_names[-1]}"
         if not os.path.exists(path): os.makedirs(path)
         dump({
               "episodes": self.episodes,
