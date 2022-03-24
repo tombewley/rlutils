@@ -58,11 +58,12 @@ class SimpleModelBasedAgent(Agent):
         else: # After random mode, sample from both memories according to self.batch_split.
             states, actions, _, _, next_states = self.memory.sample(self.batch_split[0], keep_terminal_next=True)
             if states is None: return 
-            states_r, actions_r, _, _, next_states_r = self.random_memory.sample(self.batch_split[1], keep_terminal_next=True)
-            assert states_r is not None, "Random mode not long enough!"
-            states = torch.cat((states, states_r), dim=0)
-            actions = torch.cat((actions, actions_r), dim=0)
-            next_states = torch.cat((next_states, next_states_r), dim=0)        
+            if self.batch_split[1] > 0:
+                states_r, actions_r, _, _, next_states_r = self.random_memory.sample(self.batch_split[1], keep_terminal_next=True)
+                assert states_r is not None, "Random mode not long enough!"
+                states = torch.cat((states, states_r), dim=0)
+                actions = torch.cat((actions, actions_r), dim=0)
+                next_states = torch.cat((next_states, next_states_r), dim=0)
         if not self.P["probabilistic"]:
             # Update model in the direction of the true state derivatives using MSE loss.
             loss = F.mse_loss(self.model.predict(states, actions), next_states)

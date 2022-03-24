@@ -68,6 +68,8 @@ agent_parameters["simple_model_based"] = {
     "probabilistic":        False,
     "model_freq":           1,
     "batch_size":           32, 
+    "num_random_steps":     0,
+    "batch_ratio":          1,
 }
 agent_parameters["steve"] = {
     "reward":               reward_function,
