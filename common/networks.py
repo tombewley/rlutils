@@ -5,7 +5,7 @@ from gym.spaces.box import Box
 
 
 class SequentialNetwork(nn.Module):
-    def __init__(self, device, layers=None, code=None, preset=None, input_shape=None, output_size=None, normaliser=None,
+    def __init__(self, device, layers=None, code=None, preset=None, input_space=None, output_size=None, normaliser=None,
                  eval_only=False, optimiser=optim.Adam, lr=1e-3, clip_grads=False):
         """
         Net codes:
@@ -17,12 +17,13 @@ class SequentialNetwork(nn.Module):
         """
         super(SequentialNetwork, self).__init__() 
         if layers is None: 
-            assert input_shape is not None and output_size is not None, "Must specify input_shape and output_size."
-            if code is not None: layers = code_parser(code, input_shape, output_size)
+            assert input_space is not None and output_size is not None, "Must specify input_space and output_size."
+            if code is not None: layers = code_parser(code, input_space, output_size)
             else:
                 assert preset is not None, "Must specify layers, code or preset."
-                layers = sequential_presets(preset, input_shape, output_size)
-        if normaliser is not None: layers.insert(0, Normalise(normaliser=normaliser, device=device))
+                layers = sequential_presets(preset, input_space, output_size)
+        if normaliser == "box_bounds": layers.insert(0, BoxNormalise(space=input_space, device=device))
+        elif normaliser is not None: raise NotImplementedError()
         self.layers = nn.Sequential(*layers)
         if eval_only: self.eval()
         else: 
@@ -49,12 +50,15 @@ class SequentialNetwork(nn.Module):
             self_param.data.copy_((other_param.data * tau) + (self_param.data * (1.0 - tau)))
 
 
-def code_parser(code, input_shape, output_size):
+def code_parser(code, input_space, output_size):
+    # NOTE: Only works for a list of Box subspaces.
+    assert type(input_space) == list and all(type(subspace) == Box for subspace in input_space)
+    input_size = sum(subspace.shape[0] for subspace in input_space)
     layers = []
     for l in code:
         if type(l) in {list, tuple}:   
             i, o = l[0], l[1]
-            if i is None: i = input_shape # NOTE: Only works for vectors at the moment.
+            if i is None: i = input_size
             if o is None: o = output_size 
             layers.append(nn.Linear(i, o))
         elif l == "R":          layers.append(nn.ReLU())
@@ -65,19 +69,21 @@ def code_parser(code, input_shape, output_size):
     return layers
 
 
-class Normalise(nn.Module):
-    def __init__(self, normaliser, device):
-        super(Normalise, self).__init__()
-        # Normalise into [-1, 1] using limits of observation space.
-        assert type(normaliser) == tuple and all(type(n) == Box for n in normaliser)
+class BoxNormalise(nn.Module):
+    """
+    Normalise into [-1, 1] using the bounds of a list of Box subspaces.
+    """
+    def __init__(self, space, device):
+        super(BoxNormalise, self).__init__()
+        assert type(space) == list and all(type(subspace) == Box for subspace in space)
         rnge, shift = [], []
-        for space in normaliser: 
-            r = ((space.high - space.low) / 2.0)
+        for subspace in space:
+            r = ((subspace.high - subspace.low) / 2.0)
             rnge += list(r)
-            shift += list(r + space.low)
+            shift += list(r + subspace.low)
         self.range, self.shift = torch.tensor(rnge, device=device), torch.tensor(shift, device=device)
 
-    def __repr__(self): return f"Normalise(range={self.range}, shift={self.shift})"
+    def __repr__(self): return f"BoxNormalise(range={self.range}, shift={self.shift})"
 
     def forward(self, x): return (x - self.shift) / self.range
 
@@ -108,7 +114,9 @@ class Normalise(nn.Module):
 class TreeNetwork(nn.Module):
     def __init__(self, code_node, code_horizon, input_shape, num_actions,
                  eval_only=False, optimiser=optim.Adam, lr=1e-3):
-        raise NotImplementedError(".forward() method? And normalisation option like SequentialNetwork")
+        raise NotImplementedError("Uses legacy 'input_shape'")
+        raise NotImplementedError("Normalisation option like SequentialNetwork")
+        raise NotImplementedError(".forward() method?")
         super(TreeNetwork, self).__init__() 
         assert type(code_node[-1][0]) == int and code_node[-1][1] is None, "Node code have linear final layer."
         # assert code_horizon[-1] == "R", "Horizon code have ReLU final layer."
@@ -224,6 +232,7 @@ class Output:
 
 
 def sequential_presets(name, input_shape, output_size):
+    raise NotImplementedError("Uses legacy 'input_shape'")
 
     if name == "CartPolePi_Pixels":
         # Just added Softmax to Q version.

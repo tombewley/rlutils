@@ -6,27 +6,28 @@ from ..common.utils import col_concat
 
 import numpy as np
 import torch
-import torch.nn.functional as F 
+import torch.nn.functional as F
 
 
 class DdpgAgent(Agent):
+    """
+    Deep deterministic policy gradient with optional TD3 extensions.
+    """
     def __init__(self, env, hyperparameters):
-        """
-        DESCRIPTION
-
-        TODO: Make TD3 inherit from DDPG, rather than complicating this class with if statements.
-        """
         Agent.__init__(self, env, hyperparameters)
         # Create pi and Q networks.
-        if len(self.env.observation_space.shape) > 1: raise NotImplementedError()
-        self.pi = SequentialNetwork(code=self.P["net_pi"], input_shape=self.env.observation_space.shape[0], output_size=self.env.action_space.shape[0], lr=self.P["lr_pi"], device=self.device)
-        self.pi_target = SequentialNetwork(code=self.P["net_pi"], input_shape=self.env.observation_space.shape[0], output_size=self.env.action_space.shape[0], eval_only=True, device=self.device)
+        self.pi = SequentialNetwork(code=self.P["net_pi"], input_space=[self.env.observation_space], output_size=self.env.action_space.shape[0],
+                                    normaliser=self.P["input_normaliser"], lr=self.P["lr_pi"], device=self.device)
+        self.pi_target = SequentialNetwork(code=self.P["net_pi"], input_space=[self.env.observation_space], output_size=self.env.action_space.shape[0],
+                                           normaliser=self.P["input_normaliser"], eval_only=True, device=self.device)
         self.pi_target.load_state_dict(self.pi.state_dict()) # Clone.
         self.Q, self.Q_target = [], []
         for _ in range(2 if self.P["td3"] else 1): # For TD3 we have two Q networks, each with their corresponding targets.
             # Action is an *input* to the Q network here.
-            Q = SequentialNetwork(code=self.P["net_Q"], input_shape=self.env.observation_space.shape[0]+self.env.action_space.shape[0], output_size=1, lr=self.P["lr_Q"], clip_grads=True, device=self.device)
-            Q_target = SequentialNetwork(code=self.P["net_Q"], input_shape=self.env.observation_space.shape[0]+self.env.action_space.shape[0], output_size=1, eval_only=True, device=self.device)
+            Q = SequentialNetwork(code=self.P["net_Q"], input_space=[self.env.observation_space, self.env.action_space], output_size=1,
+                                  normaliser=self.P["input_normaliser"], lr=self.P["lr_Q"], clip_grads=True, device=self.device)
+            Q_target = SequentialNetwork(code=self.P["net_Q"], input_space=[self.env.observation_space, self.env.action_space], output_size=1,
+                                         normaliser=self.P["input_normaliser"], eval_only=True, device=self.device)
             Q_target.load_state_dict(Q.state_dict()) # Clone.
             self.Q.append(Q); self.Q_target.append(Q_target)
         # Create replay memory.
@@ -35,10 +36,10 @@ class DdpgAgent(Agent):
         if self.P["noise_params"][0] == "ou": self.exploration = OUNoise(self.env.action_space, *self.P["noise_params"][1:])
         elif self.P["noise_params"][0] == "un": self.exploration = UniformNoise(self.env.action_space, *self.P["noise_params"][1:])
         else: raise Exception()
-        # Tracking variables.   
+        # Tracking variables.
         self.total_ep = 0 # Used for noise decay.
         self.total_t = 0 # Used for policy update frequency for TD3.
-        self.ep_losses = []  
+        self.ep_losses = []
     
     def act(self, state, explore=True, do_extra=False):
         """Deterministic action selection plus additive noise."""
@@ -46,13 +47,13 @@ class DdpgAgent(Agent):
             action_greedy = self.pi(state).cpu().numpy()[0]
             action = self.exploration(action_greedy) if explore else action_greedy
             if do_extra:
-                sa = col_concat(state, torch.tensor([action], device=self.device, dtype=torch.float))
-                sa_greedy = col_concat(state, torch.tensor([action_greedy], device=self.device, dtype=torch.float)) if explore else sa
+                sa = col_concat(state, torch.tensor(action, device=self.device).unsqueeze(0))
+                sa_greedy = col_concat(state, torch.tensor(action_greedy, device=self.device).unsqueeze(0)) if explore else sa
                 extra = {"action_greedy": action_greedy}
                 for i, Q in zip(["", "2"], self.Q):
                     extra[f"Q{i}"] = Q(sa).item(); extra[f"Q{i}_greedy"] = Q(sa_greedy).item()
-            else: extra = {}       
-            return action, extra 
+            else: extra = {}
+            return action, extra
 
     def update_on_batch(self, states=None, actions=None, Q_targets=None):
         """Use a random batch from the replay memory to update the pi and Q network parameters.

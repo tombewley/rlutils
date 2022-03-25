@@ -18,12 +18,12 @@ default_hyperparameters = {
     "num_skills": 50, # Number of skills. NOTE: Highly environment-dependent!
     "include_actions": False, # Whether or not to include action dimensions in discriminator input.
     "log_p_z_in_reward": True, # Whether or not to include -log(p(z)) term in pseudo-reward.
-    "sac_parameters": {"batch_size": 128, "alpha": 0.1, "tau": 0.01} # DIAYN is built around SAC.
   },
 
   "ddpg": {
     "net_pi": [(None, 256), "R", (256, 256), "R", (256, None), "T"], # Tanh policy (bounded in [-1,1]).
     "net_Q": [(None, 256), "R", (256, 256), "R", (256, 1)],
+    "input_normaliser": None, # Set to "box_bounds" to pre-normalise network inputs.
     "replay_capacity": 50000, # Size of replay buffer (starts overwriting when full).
     "batch_size": 128, # Size of batches to sample from replay buffer during learning.
     "lr_pi": 1e-4, # Learning rate for policy.
@@ -91,6 +91,7 @@ default_hyperparameters = {
   "sac": {
     "net_pi": [(None, 256), "R", (256, 256), "R", (256, None)],
     "net_Q": [(None, 256), "R", (256, 256), "R", (256, None)],
+    "input_normaliser": None, # Set to "box_bounds" to pre-normalise network inputs.
     "replay_capacity": 10000, # Size of replay buffer (starts overwriting when full).
     "batch_size": 256, # Size of batches to sample from replay buffer during learning.
     "lr_pi": 1e-4, # Learning rate for policy.
