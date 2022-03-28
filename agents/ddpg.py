@@ -33,8 +33,8 @@ class DdpgAgent(Agent):
         # Create replay memory.
         self.memory = ReplayMemory(self.P["replay_capacity"])
         # Create noise process for exploration.
-        if self.P["noise_params"][0] == "ou": self.exploration = OUNoise(self.env.action_space, *self.P["noise_params"][1:])
-        elif self.P["noise_params"][0] == "un": self.exploration = UniformNoise(self.env.action_space, *self.P["noise_params"][1:])
+        if self.P["noise_params"][0] == "ou": self.exploration = OUNoise(self.env.action_space, *self.P["noise_params"][1:], device=self.device)
+        elif self.P["noise_params"][0] == "un": self.exploration = UniformNoise(self.env.action_space, *self.P["noise_params"][1:], device=self.device)
         else: raise Exception()
         # Tracking variables.
         self.total_ep = 0 # Used for noise decay.
@@ -44,16 +44,17 @@ class DdpgAgent(Agent):
     def act(self, state, explore=True, do_extra=False):
         """Deterministic action selection plus additive noise."""
         with torch.no_grad():
-            action_greedy = self.pi(state).cpu().numpy()[0]
+            action_greedy = self.pi(state)
             action = self.exploration(action_greedy) if explore else action_greedy
+            action = self._action_scale(action) # NOTE: Apply action scaling *after* adding noise.
             if do_extra:
-                sa = col_concat(state, torch.tensor(action, device=self.device).unsqueeze(0))
-                sa_greedy = col_concat(state, torch.tensor(action_greedy, device=self.device).unsqueeze(0)) if explore else sa
+                sa = col_concat(state, action)
+                sa_greedy = col_concat(state, action_greedy) if explore else sa
                 extra = {"action_greedy": action_greedy}
                 for i, Q in zip(["", "2"], self.Q):
                     extra[f"Q{i}"] = Q(sa).item(); extra[f"Q{i}_greedy"] = Q(sa_greedy).item()
             else: extra = {}
-            return action, extra
+            return action.cpu().numpy()[0], extra
 
     def update_on_batch(self, states=None, actions=None, Q_targets=None):
         """Use a random batch from the replay memory to update the pi and Q network parameters.
@@ -62,7 +63,7 @@ class DdpgAgent(Agent):
             states, actions, rewards, nonterminal_mask, nonterminal_next_states = self.memory.sample(self.P["batch_size"])
             if states is None: return 
             # Select a' using the target pi network.
-            nonterminal_next_actions = self.pi_target(nonterminal_next_states)
+            nonterminal_next_actions = self._action_scale(self.pi_target(nonterminal_next_states))
             if self.P["td3"]:
                 # For TD3 we add clipped noise to a' to reduce overfitting.
                 noise = (torch.randn_like(nonterminal_next_actions) * self.P["td3_noise_std"]
@@ -83,7 +84,7 @@ class DdpgAgent(Agent):
         if (not self.P["td3"]) or (self.total_t % self.P["td3_policy_freq"] == 0): # For TD3, only update policy and targets every N timesteps.
             # Update policy in the direction of increasing value according to self.Q (the policy gradient).
             # This means that the policy function approximates the argmax() operation used in Q learning for discrete action spaces.
-            policy_loss = -self.Q[0](col_concat(states, self.pi(states))).mean() # NOTE: Using first Q network only.
+            policy_loss = -self.Q[0](col_concat(states, self._action_scale(self.pi(states)))).mean() # NOTE: Using first Q network only.
             self.pi.optimise(policy_loss)
             policy_loss = policy_loss.item()
         # Perform soft (Polyak) updates on targets.

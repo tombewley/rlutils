@@ -43,7 +43,8 @@ class SacAgent(Agent):
     def act(self, state, explore=True, do_extra=False):
         """Probabilistic action selection from Gaussian parameterised by output of self.pi."""
         with torch.no_grad():
-            action, log_prob = squashed_gaussian(self.pi(state))
+            action, log_prob = squashed_gaussian(self.pi(state)) # TODO: Make squashed_gaussian into network layer
+            action = self._action_scale(action)
             self.ep_log_probs.append(log_prob.cpu().numpy()[0])
             return action.cpu().numpy()[0], {}
 
@@ -54,6 +55,7 @@ class SacAgent(Agent):
         if states is None: return 
         # Select a' using the current pi network.
         nonterminal_next_actions, nonterminal_next_log_probs = squashed_gaussian(self.pi(nonterminal_next_states))
+        nonterminal_next_actions = self._action_scale(nonterminal_next_actions)
         # Use target Q networks to compute Q_target(s', a') for each nonterminal next state and take the minimum value. This is the "clipped double Q trick".
         next_Q_values = torch.zeros(self.P["batch_size"], device=self.device)
         next_Q_values[nonterminal_mask] = torch.min(*(Q_target(col_concat(nonterminal_next_states, nonterminal_next_actions)) for Q_target in self.Q_target)).squeeze()       
@@ -69,6 +71,7 @@ class SacAgent(Agent):
             value_loss_sum += value_loss.item()
         # Re-evaluate actions using the current pi network and get their values using the current Q networks. Again use the clipped double Q trick. 
         actions_new, log_probs_new = squashed_gaussian(self.pi(states))
+        actions_new = self._action_scale(actions_new)
         Q_values_new = torch.min(*(Q(col_concat(states, actions_new)) for Q in self.Q))
         # Update policy in the direction of increasing value according to self.Q (the policy gradient), plus entropy regularisation.
         policy_loss = ((self.P["alpha"] * log_probs_new) - Q_values_new).mean()

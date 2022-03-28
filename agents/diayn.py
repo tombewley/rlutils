@@ -32,7 +32,6 @@ class DiaynAgent(SacAgent):
         self.ep_losses_discriminator = []
         self.ep_pseudo_reward_sum = 0.
 
-
     def act(self, state, skill=None, explore=True, do_extra=False):
         """Augment state with one-hot skill vector, then use SAC action selection."""
         if skill is None: skill = self.skill

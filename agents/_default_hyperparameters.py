@@ -63,6 +63,7 @@ default_hyperparameters = {
     "net_pi_cont": [(None, 64), "R", (64, 64), "R", (64, None), "T"], # Tanh policy (bounded in [-1,1]).
     "net_pi_disc": [(None, 64), "R", (64, 64), "R", (64, None), "S"], # Softmax policy for discrete.
     "net_V": [(None, 64), "R", (64, 64), "R", (64, None)],
+    "input_normaliser": None, # Set to "box_bounds" to pre-normalise network inputs.
     "lr_pi": 3e-4,       
     "lr_V": 1e-3,
     "num_steps_per_update": 80, # Number of gradient steps per update.
@@ -132,11 +133,13 @@ default_hyperparameters = {
   "steve": {
     "net_model": [(None, 32), "R", (32, 64), "R", (64, None)],
     "num_random_steps": 1000, # Number of steps before disabling random mode and starting learning.
-    "num_models": 2, # Number of parallel dynamics models to train.
+    "ensemble_size": 2, # Number of parallel dynamics models to train.
     "model_freq": 1, # Number of steps between model updates.
     "lr_model": 1e-3, # Learning rate for dynamics model.
-    "horizon": 5, # Maximum number of model steps to run to produce Q values.
-    "ddpg_parameters": {"td3": True} # STEVE is built around DDPG, and needs multiple Q_target networks.
+    "planning": {
+      "horizon": 5, # Maximum number of model steps to run to produce Q values.
+    },
+    "td3": True # STEVE is built around DDPG, and needs multiple Q_target networks.
   },
 
   "treeqn": {

@@ -70,7 +70,7 @@ class PbrlObserver:
         """
         assert self.P["reward_source"] != "extrinsic", "This shouldn't have been called. Unwanted call to pbrl.link(agent)?"
         if "discrete_action_map" in self.P: actions = [self.P["discrete_action_map"][a] for a in actions] 
-        transitions = torch.cat([states, actions, next_states], dim=1)
+        transitions = torch.cat([states, actions, next_states], dim=-1)
         if self.P["reward_source"] == "oracle": # NOTE: Oracle defined over raw transitions rather than features
             assert not return_params, "Oracle doesn't use normal distribution parameters"
             return self.interface.oracle(transitions)

@@ -2,8 +2,8 @@ import torch
 
 
 def col_concat(x, y):
-    """Concatenate x and y along the second (column) dimension."""
-    return torch.cat([x, y], dim=1).float()
+    """Concatenate x and y along the final (column) dimension."""
+    return torch.cat([x, y], dim=-1)
 
 def one_hot(idx, len, device):
     """Create a tensor of length len which is one-hot at idx."""
