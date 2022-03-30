@@ -1,6 +1,7 @@
 from ._generic import Agent
 from ..common.memory import ReplayMemory
 from ..common.dynamics import DynamicsModel
+from ..common.utils import truncated_normal
 
 import torch
 from numpy import mean
@@ -18,7 +19,10 @@ class SimpleModelBasedAgent(Agent):
         # Create dynamics model.
         self.model = DynamicsModel(code=self.P["net_model"], observation_space=self.env.observation_space, action_space=self.env.action_space,
                                    reward_function=self.P["reward"], probabilistic=self.P["probabilistic"], lr=self.P["lr_model"],
-                                   ensemble_size=self.P["ensemble_size"], planning_params=self.P["planning"], device=self.device)
+                                   ensemble_size=self.P["ensemble_size"], rollout_params=self.P["rollout"], device=self.device)
+        # Action space bounds, needed for CEM.
+        self.action_space_low = torch.tensor(self.env.action_space.low, device=self.device)
+        self.action_space_high = torch.tensor(self.env.action_space.high, device=self.device)
         # Create replay memory in two components: one for random transitions one for on-policy transitions.
         self.random_memory = ReplayMemory(self.P["num_random_steps"])
         self.memory = ReplayMemory(self.P["replay_capacity"])
@@ -37,14 +41,35 @@ class SimpleModelBasedAgent(Agent):
                 if do_extra: 
                     action_torch = torch.tensor(action, device=self.device).unsqueeze(0)
                     extra["next_state_pred"] = self.model.predict(state, action_torch)[0].cpu().numpy()
-            else: 
-                states, actions, returns = self.model.plan(state, policy="cem", ensemble_index="ts1")
-                best = torch.argmax(returns[-1,:,-1]) # Look at final planning iteration and final timestep only
+            else:
+                # CEM: use model and reward function to generate and evaluate action sequences sampled from a truncated normal.
+                # After each iteration, refine the parameters of the truncated normal based on a subset of elites and resample.
+                action_dim = self.env.action_space.shape[0]
+                mean    = torch.empty((self.P["cem_iterations"], self.model.horizon, 1, action_dim), device=self.device)
+                std     = torch.empty((self.P["cem_iterations"], self.model.horizon, 1, action_dim), device=self.device)
+                # NOTE: Initialise distribution parameters based on action space bounds.
+                mean[0], std[0] = self.act_b, self.act_k
+                actions = torch.empty((self.P["cem_iterations"], self.P["cem_particles"], self.model.horizon, 1, action_dim), device=self.device)
+                returns = torch.zeros((self.P["cem_iterations"], self.P["cem_particles"]                                   ), device=self.device)
+                gamma_range = torch.tensor([self.P["gamma"]**t for t in range(self.model.horizon)]).reshape(1,-1,1)
+                for i in range(self.P["cem_iterations"]):
+                    if i > 0:
+                        # Update sampling distribution using elites from previous iteration.
+                        std_elite, mean_elite = torch.std_mean(actions[i-1,elites], dim=0, unbiased=False)
+                        mean[i] = (1 - self.P["cem_alpha"]) * mean[i-1] + self.P["cem_alpha"] * mean_elite
+                        std[i] = (1 - self.P["cem_alpha"]) * std[i-1] + self.P["cem_alpha"] * std_elite
+                    # Sample action sequences from truncated normal parameterised by mean/std and action space bounds.
+                    actions[i] = truncated_normal(actions[i], mean=mean[i], std=std[i], a=self.action_space_low, b=self.action_space_high)
+                    # Propogate action sequences through the model.
+                    states, _, rewards = self.model.rollout(state, actions=actions[i], ensemble_index="ts1")
+                    returns[i] = (gamma_range * rewards).sum(axis=1).squeeze()
+                    elites = returns[i].topk(self.P["cem_elites"]).indices
+                best = elites[0]
                 action = actions[-1,best,0] # Take first action only
                 action = action.cpu().numpy()[0] if self.continuous_actions else action.item()
                 if do_extra: 
                     extra["g_pred"] = returns[-1,best].item()
-                    extra["next_state_pred"] = states[-1,best,1].cpu().numpy()
+                    extra["next_state_pred"] = states[best,1].cpu().numpy()
             return action, extra
 
     def update_on_batch(self):

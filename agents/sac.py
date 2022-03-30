@@ -89,7 +89,7 @@ class SacAgent(Agent):
         """Operations to perform on each episode end during training."""
         mean_log_prob = np.mean(self.ep_log_probs)
         del self.ep_log_probs[:]
-        mean_policy_loss, mean_value_loss = np.nanmean(self.ep_losses, axis=0) if self.ep_losses else 0., 0.
+        mean_policy_loss, mean_value_loss = np.mean(self.ep_losses, axis=0) if self.ep_losses else (0., 0.)
         del self.ep_losses[:]
         return {"policy_loss": mean_policy_loss, "value_loss": mean_value_loss, "mean_log_prob": mean_log_prob}
 

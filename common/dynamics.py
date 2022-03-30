@@ -1,5 +1,5 @@
-from .networks import SequentialNetwork, BoxNormalise
-from .utils import col_concat, reparameterise, truncated_normal
+from .networks import SequentialNetwork
+from .utils import col_concat, reparameterise
 
 import torch
 from random import choice
@@ -20,23 +20,21 @@ class DynamicsModel:
     """
     Optionally implements probabilistic dynamics using the reparameterisation trick.
     """
-    def __init__(self, code, observation_space, action_space, reward_function, lr, ensemble_size, planning_params, device, probabilistic=False):
+    def __init__(self, code, observation_space, action_space, reward_function, lr, ensemble_size, rollout_params, device, probabilistic=False):
         self.reward_function = reward_function
         self.probabilistic = probabilistic
-        self.P = planning_params
+        self.P = rollout_params
         assert type(action_space) == Box, "CEM doesn't work with discrete actions, and need one-hot encoding for model"
         self.nets = [SequentialNetwork(code=code, input_space=[observation_space, action_space],
                                      output_size=observation_space.shape[0]*(2 if self.probabilistic else 1),
                                      normaliser="box_bounds", lr=lr, device=device) # NOTE: Using box_bounds normalisation.
                      for _ in range(ensemble_size)]
-        # Initial planning horizon.
-        self.horizon = self.P["horizon_params"][1] # NOTE: indexing assumption.
-        # Parameters for state and action scaling.
-        self.state_loss_weights = torch.tensor(1. / (observation_space.high - observation_space.low), device=device)
-        self.action_space_low = torch.tensor(action_space.low, device=device)
-        self.action_space_high = torch.tensor(action_space.high, device=device)
-        self.act_k = (self.action_space_high - self.action_space_low) / 2.
-        self.act_b = (self.action_space_high + self.action_space_low) / 2.
+        self.horizon = self.P["horizon_params"][1] # Initial planning horizon (NOTE: indexing assumption).
+        self.action_dim = action_space.shape[0]
+        # Weight model loss function by bounds of observation space.
+        self.loss_weights = torch.tensor(1. / (observation_space.high - observation_space.low), device=device)
+
+
         # NOTE: Currently MBRL-Lib says fixed bounds "work better" than learnt ones. Using values from there (note std instead of var).
         if self.probabilistic: self.log_std_clamp = ("hard", -20, 2) # ("soft", -20, 2)
         # Tracking variables.
@@ -64,49 +62,26 @@ class DynamicsModel:
             else: ds = reparameterise(ds, clamp=self.log_std_clamp).rsample() 
         return states + ds
 
-    def plan(self, states_init, policy, ensemble_index):
+    def rollout(self, states_init, ensemble_index, policy=None, actions=None):
         """
-        Use model and reward function to generate and evaluate action sequences sampled from a truncated normal.
-        After each iteration, refine the parameters of the truncated normal based on a subset of elites and resample.
+        Starting at states_init, rollout either a callable policy or predefined action sequences.
         """
-        # Create empty tensors. TODO: Initialise just once to save memory allocation time
-        batch_size, action_dim = states_init.shape[0], self.action_space_low.shape[0]
-        states  = torch.empty((self.P["num_iterations"], self.P["num_particles"], self.horizon+1, batch_size, states_init.shape[1]), device=states_init.device)
-        actions = torch.empty((self.P["num_iterations"], self.P["num_particles"], self.horizon,   batch_size, action_dim         ), device=states_init.device)
-        rewards = torch.zeros((self.P["num_iterations"], self.P["num_particles"], self.horizon,   batch_size                     ), device=states_init.device)
-        # Initiate state at t = 0 and mean/std at i = 0.
-        states[:,:,0] = states_init
-
-        assert policy == "cem" or callable(policy) # TODO: Make more generic
-        if policy == "cem":
-            assert batch_size == 1
-            #### TODO: ####
-            mean    = torch.empty((self.P["num_iterations"],                          self.horizon,   batch_size, action_dim         ), device=states_init.device)
-            std     = torch.empty((self.P["num_iterations"],                          self.horizon,   batch_size, action_dim         ), device=states_init.device)
-            mean[0] = torch.zeros((self.horizon, batch_size, action_dim))
-            std[0] = 2*torch.ones((self.horizon, batch_size, action_dim))
-            # gamma_range = torch.tensor([self.P["gamma"]**(t+1) for t in range(self.model.P["horizon"]+1)]).reshape(1,-1,1)
-            ###############
-
-        elif ensemble_index == "tsinf":
-            raise NotImplementedError("Allocate a member to each particle at the start")
-
-        for i in range(self.P["num_iterations"]):
-            if policy == "cem":
-                if i > 0:
-                    # Update mean/std using elites from previous iteration.
-                    raise NotImplementedError("Use gamma_range")
-                    elites = returns[i-1,:,-1,0].topk(self.P["num_elites"]).indices
-                    std_elite, mean_elite = torch.std_mean(actions[i-1,elites], dim=0, unbiased=False)
-                    mean[i] = (1 - self.P["alpha"]) * mean[i-1] + self.P["alpha"] * mean_elite
-                    std[i] = (1 - self.P["alpha"]) * std[i-1] + self.P["alpha"] * std_elite
-                # Sample action sequences from truncated normal parameterised by mean/std and action space bounds.
-                actions[i] = truncated_normal(actions[i], mean=mean[i], std=std[i], a=self.action_space_low, b=self.action_space_high)
-            # Evaluate action sequences using dynamics model and reward function.
-            for t in range(self.horizon):
-                if callable(policy): actions[i,:,t] = policy(states[i,:,t])
-                states[i,:,t+1] = self.predict(states[i,:,t], actions[i,:,t], ensemble_index)
-                rewards[i,:,t]  = self.reward_function(states[i,:,t], actions[i,:,t], states[i,:,t+1])
+        batch_size = states_init.shape[0]
+        if actions is not None:
+            assert torch.is_tensor(actions) and actions.shape[1:] == (self.horizon, batch_size, self.action_dim)
+            using_policy, num_particles = False, actions.shape[0]
+        elif policy is not None:
+            assert callable(policy)
+            using_policy, num_particles = True, self.P["num_particles"]
+            actions = torch.empty((num_particles, self.horizon,   batch_size, self.action_dim     ), device=states_init.device)
+        else: raise ValueError("Must provide either policy or actions.")
+        states      = torch.empty((num_particles, self.horizon+1, batch_size, states_init.shape[1]), device=states_init.device)
+        rewards     = torch.zeros((num_particles, self.horizon,   batch_size                      ), device=states_init.device)
+        states[:,0] = states_init
+        for t in range(self.horizon):
+            if using_policy: actions[:,t] = policy(states[:,t]) # If using a policy, action selection is closed-loop.
+            states[:,t+1] = self.predict(states[:,t], actions[:,t], ensemble_index)
+            rewards[:,t]  = self.reward_function(states[:,t], actions[:,t], states[:,t+1])
         return states, actions, rewards
 
     def update_on_batch(self, states, actions, next_states, ensemble_index):
@@ -114,12 +89,12 @@ class DynamicsModel:
         Update one member of the ensemble using a batch of transitions.
         """
 
-        # TODO: Use multiple gradient updates and holdout_ratio
+        # TODO: Use multiple gradient steps and holdout_ratio
         # https://github.com/Xingyu-Lin/mbpo_pytorch/blob/main/model.py
 
         if not self.probabilistic:
             # Update model in the direction of the true state derivatives using weighted MSE loss.
-            loss = (self.state_loss_weights * (self.predict(states, actions, ensemble_index=ensemble_index) - next_states) ** 2).mean()
+            loss = (self.loss_weights * (self.predict(states, actions, ensemble_index=ensemble_index) - next_states) ** 2).mean()
         else:
             raise NotImplementedError("Haven't implemented weighting (careful with variance!)")
             # Update model using Gaussian negative log likelihood loss (see PETS paper equation 1).

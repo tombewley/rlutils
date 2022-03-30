@@ -89,18 +89,21 @@ agent_parameters["steve"] = {**agent_parameters["td3"], **{
     "ensemble_size":        2,
     "num_random_steps":     0,
     "batch_size":           32,
-    "planning": {
-        "horizon":          5
+    "rollout": {
+        "horizon_params":   ("constant", 5)
     }
 }}
 agent_parameters["mbpo"] = {**agent_parameters["sac"], **{
     "input_normaliser":     "box_bounds",
     "reward":               reward_function,
     "probabilistic":        False,
-    "num_random_steps":     1000,
-    "model_freq":           600,
-    "planning": {
-      "horizon_params": ("linear", 1, 25, (10, 30))
+    "num_random_steps":     0,
+    "model_freq":           1,
+    "rollouts_per_update":  2,
+    "retained_updates":     500,
+    "policy_updates_per_timestep": 20,
+    "rollout": {
+      "horizon_params": ("linear", 1, 25, (1000, 3000))
     }
 }}
 

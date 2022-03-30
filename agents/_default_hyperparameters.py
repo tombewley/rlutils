@@ -64,11 +64,11 @@ default_hyperparameters = {
     "holdout_ratio_model": 0.2, # Proportion of model batch to use in holdout set.
     "lr_model": 1e-3, # Learning rate for dynamics model.
     "rollouts_per_update": 400, # Number of rollouts to perform each time the model is updated.
-    "planning": {
+    "rollout": {
       "horizon_params": ("linear", 1, 25, (20, 100)), # initial, final, (start of change, end of change) in units of model updates.
     },
     "retained_updates": 20, # Number of updates' worth of rollouts to retain in the simulated memory.
-    "gradient_steps_per_update": 20, # For pi/Q; use of model-generated data reduces overfitting risk.
+    "policy_updates_per_timestep": 20, # For pi/Q; use of model-generated data reduces overfitting risk.
   },
 
   "off_policy_mc": {
@@ -129,14 +129,13 @@ default_hyperparameters = {
     "lr_model": 1e-3, # Learning rate for dynamics model.
     "replay_capacity": 2000, # Size of replay memory (starts overwriting when full).
     "batch_ratio": 0.9, # Proportion of on-policy transitions.
-    "planning": {
-      "num_iterations": 5,
-      "num_particles": 50,
+    "cem_iterations": 5, # Number of rounds of distribution refinement during planning.
+    "cem_particles": 50,
+    "cem_elites": 10,
+    "cem_alpha": 0.1, # Update rate for CEM sampling distribution.
+    "gamma": 0.99, # Discount factor.
+    "rollout": {
       "horizon_params": ("constant", 20),
-      "gamma": 0.99, # Discount factor.
-      # --- If num_iterations > 1 ---
-      "num_elites": 10,
-      "alpha": 0.1, # Update rate for CEM sampling distribution.
     }
   },
   
@@ -151,7 +150,7 @@ default_hyperparameters = {
     "num_random_steps": 1000, # Number of steps before disabling random mode and starting policy optimisation.
     "model_freq": 1, # Number of steps between model updates.
     "lr_model": 1e-3, # Learning rate for dynamics model.
-    "planning": {
+    "rollout": {
       "horizon_params": ("constant", 5), # Maximum number of model steps to run to produce Q values.
     },
     "td3": True # STEVE is built around DDPG, and needs multiple Q_target networks.

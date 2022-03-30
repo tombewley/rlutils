@@ -22,15 +22,12 @@ class MbpoAgent(SacAgent):
         for k, v in hyperparameters.items(): P[k] = v
         SacAgent.__init__(self, env, P)
         # Create dynamics model.
-        self.P["planning"]["num_iterations"] = self.P["planning"]["num_particles"] = 1
-        assert "gamma" not in self.P["planning"], "Planning needs to inherit agent-level gamma."
-        self.P["planning"]["gamma"] = self.P["gamma"]
+        self.P["rollout"]["num_particles"] = 1
         self.model = DynamicsModel(code=self.P["net_model"], observation_space=self.env.observation_space, action_space=self.env.action_space,
                                    reward_function=self.P["reward"], probabilistic=self.P["probabilistic"], lr=self.P["lr_model"],
-                                   ensemble_size=self.P["ensemble_size"], planning_params=self.P["planning"], device=self.device)
+                                   ensemble_size=self.P["ensemble_size"], rollout_params=self.P["rollout"], device=self.device)
         # Create rollout memory, which behaves similarly to common.ReplayMemory but with a capacity that varies based on model.horizon.
         self.rollouts = RolloutMemory(self.P["retained_updates"])
-        
         # Tracking variables.
         self.random_mode = True
         self.ep_losses_model = []
@@ -56,16 +53,18 @@ class MbpoAgent(SacAgent):
                 if states is None: return 
                 self.ep_losses_model.append(self.model.update_on_batch(states, actions, next_states, i))
             # Periodically increase the model rollout horizon.
-            self.model.num_updates += 1; self.model._update_horizon()  
-            # Sample a batch of "seed" states from which to begin model rollouts.
-            states_init, _, _, _, _ = self.memory.sample(self.P["rollouts_per_update"], keep_terminal_next=True)        
-            # Simulate forward dynamics from states_init using randomly-sampled members of the ensemble, 
-            # consulting pi for action selection. Save the resultant rollouts.
-            self.rollouts.add(*self.model.plan(states_init, policy=self.pi_no_logprob, ensemble_index="ts1"))
-        
-        # Sample a batch of transitions from the model rollouts, send to SAC update function and return losses.        
-        raise NotImplementedError("gradient_steps_per_update")
-        return SacAgent.update_on_batch(self, self.rollouts.sample(self.P["batch_size"]))
+            self.model.num_updates += 1; self.model._update_horizon()
+            with torch.no_grad():
+                # Sample a batch of "seed" states from which to begin model rollouts.
+                states_init, _, _, _, _ = self.memory.sample(self.P["rollouts_per_update"])
+                # Simulate forward dynamics from states_init using randomly-sampled members of the ensemble,
+                # consulting pi for action selection. Save the resultant rollouts.
+                self.rollouts.add(*self.model.rollout(states_init, policy=self.pi_no_logprob, ensemble_index="ts1"))
+        # Uses batches sampled from model rollouts to update pi/Q.
+        # Can perform more updates than normal here; use of model-generated data reduces overfitting risk.
+        for _ in range(self.P["policy_updates_per_timestep"]):
+            losses = SacAgent.update_on_batch(self, self.rollouts.sample(self.P["batch_size"]))
+        return losses # NOTE: Just returning loss from the last batch.
 
     def per_timestep(self, state, action, reward, next_state, done):
         """Operations to perform on each timestep during training."""
@@ -76,9 +75,12 @@ class MbpoAgent(SacAgent):
 
     def per_episode(self):
         """Operations to perform on each episode end during training."""
-        mean_loss = mean(self.ep_losses_model) if self.ep_losses_model else 0.
+        logs = SacAgent.per_episode(self)
+        logs["model_loss"] = mean(self.ep_losses_model) if self.ep_losses_model else 0.
+        logs["horizon"] = self.model.horizon
+        logs["random_mode"] = int(self.random_mode)
         del self.ep_losses_model[:]
-        return {"model_loss": mean_loss, "horizon": self.model.horizon, "random_mode": int(self.random_mode)}
+        return logs
 
     def pi_no_logprob(self, states):
         actions, _ = self.pi(states)
@@ -95,11 +97,11 @@ class RolloutMemory:
     def add(self, states, actions, rewards):
         if len(self.memory) < self.capacity: self.memory.append(None) 
         self.memory[self.position] = (
-            torch.flatten(states[:,:,:-1], end_dim=-2),
+            torch.flatten(states[:,:-1], end_dim=-2),
             torch.flatten(actions, end_dim=-2),
             torch.flatten(rewards),
             torch.ones(torch.numel(rewards), dtype=bool), # NOTE: nonterminal_mask is all True.
-            torch.flatten(states[:,:,1:], end_dim=-2)
+            torch.flatten(states[:,1:], end_dim=-2)
         )
         self.position = (self.position + 1) % self.capacity
 

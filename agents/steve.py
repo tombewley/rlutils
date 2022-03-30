@@ -23,10 +23,9 @@ class SteveAgent(DdpgAgent):
         DdpgAgent.__init__(self, env, P)
         assert len(self.Q_target) > 1, "Need multiple Q networks to do variance for horizon = 0."
         # Create dynamics model.
-        self.P["planning"]["num_iterations"] = 1
-        self.P["planning"]["num_particles"] = self.P["ensemble_size"]
+        self.P["rollout"]["num_particles"] = self.P["ensemble_size"]
         self.model = DynamicsModel(code=self.P["net_model"], observation_space=self.env.observation_space, action_space=self.env.action_space,
-                                     reward_function=self.P["reward"], ensemble_size=self.P["ensemble_size"], planning_params=self.P["planning"],
+                                     reward_function=self.P["reward"], ensemble_size=self.P["ensemble_size"], rollout_params=self.P["rollout"],
                                      lr=self.P["lr_model"], device=self.device)
         # Small float used to prevent div/0 errors.
         self.eps = np.finfo(np.float32).eps.item()
@@ -55,62 +54,56 @@ class SteveAgent(DdpgAgent):
                 states, actions, _, _, next_states = self.memory.sample(self.P["batch_size"], keep_terminal_next=True)
                 if states is None: return 
                 self.ep_losses_model.append(self.model.update_on_batch(states, actions, next_states, i))
-        
-        # TODO: Handle termination via nonterminal_mask.
-
+        # TODO: Skip terminal next_states?
         # Sample another batch, this time for training pi and Q, using the model to obtain (hopefully) better Q_targets.
         states, actions, _, nonterminal_mask, next_states = self.memory.sample(self.P["batch_size"], keep_terminal_next=True)
         with torch.no_grad():
-            n, e, h, b = len(self.Q_target), self.P["ensemble_size"], self.model.P["horizon"], self.P["batch_size"]
-            Q_targets = torch.zeros((n, e, h+1, b), device=self.device)
-            sim_actions = torch.empty((e, h+1, b, actions.shape[1]), device=self.device)
-            # Simulate forward dynamics from next_states using each network in the ensemble, consulting pi_target for action selection.
-            sim_states, sim_actions[:,:-1], Q_targets[:,:,1:] = self.model.plan(next_states, policy=self.pi_target_scaled, ensemble_index=list(range(self.P["ensemble_size"])))
-            sim_states = sim_states.squeeze(0)
-            Q_targets[:,:,1:] *= self.model.P["gamma"] # Discount simulated returns.
-            sim_actions[:,-1] = self._action_scale(self.pi_target(sim_states[:,-1])) # Use pi_target again on the last states. 
-            # Then add immediate states, actions and rewards.
-            Q_targets += self.model.reward_function(states, actions, next_states)
-            # Add discounted Q values as predicted by each Q_target network.
-            gamma_range = torch.tensor([self.model.P["gamma"]**(t+1) for t in range(self.model.P["horizon"]+1)]).reshape(1,-1,1)
-            for j, target_net in enumerate(self.Q_target):
-                Q_targets[j] += gamma_range * target_net(col_concat(sim_states, sim_actions)).squeeze(3)
-
-            if True: # Old method for sanity checking
+            sim_actions = torch.empty((self.P["ensemble_size"], self.model.horizon+1, self.P["batch_size"], actions.shape[1]), device=self.device)
+            sim_rewards = torch.zeros((self.P["ensemble_size"], self.model.horizon+1, self.P["batch_size"]), device=self.device)
+            sim_rewards[:,0] = self.model.reward_function(states, actions, next_states) # Immediate rewards.
+            # Simulate forward dynamics from *next_states* using each network in the ensemble, consulting pi_target for action selection.
+            sim_states, sim_actions[:,:-1], sim_rewards[:,1:] = self.model.rollout(next_states, policy=self.pi_target_scaled, ensemble_index=list(range(self.P["ensemble_size"])))
+            sim_actions[:,-1] = self.pi_target_scaled(sim_states[:,-1]) # Use pi_target again on the last states.
+            # Discount the rewards and take cumulative sum to yield returns up to each horizon.
+            gamma_range = torch.tensor([self.P["gamma"]**t for t in range(self.model.horizon+2)]).reshape(1,-1,1)
+            sim_returns = torch.cumsum(gamma_range[:,:-1] * sim_rewards, dim=1)
+            # Finally, add discounted Q values as predicted by each Q_target network.
+            Q_targets = torch.cat([(sim_returns + (gamma_range[:,1:] * target_net(col_concat(sim_states, sim_actions)).squeeze(3))
+                                   ).unsqueeze(0) for target_net in self.Q_target])
+            if False: # Old method for sanity checking
             
                 print(Q_targets[:,:,-1])
                 
                 # Use models to build (hopefully) better Q_targets by simulating forward dynamics.
-                Q_targets = torch.zeros((self.P["batch_size"], self.model.P["horizon"]+1, self.P["ensemble_size"], len(self.Q_target)))
+                Q_targets = torch.zeros((self.P["batch_size"], self.model.horizon+1, self.P["ensemble_size"], len(self.Q_target)))
                 # Compute model-free targets.
                 rewards = self.model.reward_function(states, actions, next_states).reshape(-1,1)
                 next_actions = self.pi_target_scaled(next_states) # Select a' using the target pi network.
                 for j, target_net in enumerate(self.Q_target):
                     # Same target for all models at this point.
-                    Q_targets[:,0,:,j] = (rewards 
-                    + self.model.P["gamma"] * target_net(col_concat(next_states, next_actions))
+                    Q_targets[:,0,:,j] = (rewards + self.P["gamma"] * target_net(col_concat(next_states, next_actions))
                     ).expand(self.P["batch_size"], self.P["ensemble_size"])
                 for i in range(self.P["ensemble_size"]):
                     # Run a forward simulation for each model.
                     sim_states, sim_actions, sim_returns = next_states, next_actions, rewards.clone()
-                    for h in range(1, self.model.P["horizon"]+1):
+                    for h in range(1, self.model.horizon+1):
                         # Use model and target pi network to get next states and actions.
                         sim_next_states = self.model.predict(sim_states, sim_actions, ensemble_index=i)
                         sim_next_actions = self.pi_target_scaled(sim_next_states)
                         # Use reward function to get reward for simulated state-action-next-state tuple and add to cumulative return.
                         sim_rewards = self.model.reward_function(sim_states, sim_actions, sim_next_states).reshape(-1,1)
                         assert sim_rewards.shape == (self.P["batch_size"], 1)
-                        sim_returns += (self.model.P["gamma"] ** h) * sim_rewards
+                        sim_returns += (self.P["gamma"] ** h) * sim_rewards
                         # Store Q_targets for this horizon.
                         for j, target_net in enumerate(self.Q_target):
-                            Q_targets[:,h,i,j] = (sim_returns 
-                            + ((self.model.P["gamma"] ** (h+1)) * target_net(col_concat(sim_next_states, sim_next_actions)))
+                            Q_targets[:,h,i,j] = (sim_returns + ((self.P["gamma"] ** (h+1)) * target_net(col_concat(sim_next_states, sim_next_actions)))
                             ).squeeze()
                         sim_states, sim_actions = sim_next_states, sim_next_actions
 
+                    # print(sim_states)
                 Q_targets = Q_targets.permute(3,2,1,0)
                 print(Q_targets[:,:,-1])  
-
+                raise Exception()
         # Inverse variance weighting of horizons. 
         var = Q_targets.var(dim=(0, 1)) + self.eps # Prevent div/0 error.
         inverse_var = 1 / var
