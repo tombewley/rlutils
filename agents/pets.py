@@ -7,10 +7,14 @@ import torch
 from numpy import mean
 
 
-class SimpleModelBasedAgent(Agent):
+class PetsAgent(Agent):
     """
-    Simple model-based agent for both discrete and continuous action spaces.
-    Adapted from the model-based component of the architecture from:
+    Probabilistic ensembles with trajectory sampling (PETS). From:
+        Chua, Kurtland, Roberto Calandra, Rowan McAllister, and Sergey Levine. 
+        "Deep reinforcement learning in a handful of trials using probabilistic dynamics models." 
+        Advances in Neural Information Processing Systems 31 (2018).
+
+    Also likely to retain some details of the model-based component from:
         "Neural Network Dynamics for Model-Based Deep Reinforcement Learning with Model-Free Fine-Tuning"
     """
     def __init__(self, env, hyperparameters):

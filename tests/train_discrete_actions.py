@@ -50,11 +50,6 @@ elif train_parameters["agent"] == "actor_critic":
         "lr_pi": 1e-4,
         "lr_V": 1e-3,
     }
-elif train_parameters["agent"] == "simple_model_based":
-    from rlutils.specific.CartPole import reward_function
-    agent_parameters = {
-        "reward_function": reward_function
-    }
 
 agent = rlutils.make(train_parameters["agent"], env, agent_parameters)
 print(agent)

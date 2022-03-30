@@ -26,7 +26,7 @@ def make(agent, env, hyperparameters=dict()):
     elif agent == "random":             from ..agents.random_agent import RandomAgent as agent_class
     elif agent == "reinforce":          from ..agents.reinforce import ReinforceAgent as agent_class
     elif agent == "sac":                from ..agents.sac import SacAgent as agent_class
-    elif agent == "simple_model_based": from ..agents.simple_model_based import SimpleModelBasedAgent as agent_class
+    elif agent == "pets":               from ..agents.pets import PetsAgent as agent_class
     elif agent == "stable_baselines":   from ..agents.stable_baselines import StableBaselinesAgent as agent_class
     elif agent == "steve":              from ..agents.steve import SteveAgent as agent_class
     elif agent == "treeqn":             from ..agents.treeqn import TreeqnAgent as agent_class

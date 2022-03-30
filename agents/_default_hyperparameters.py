@@ -76,6 +76,25 @@ default_hyperparameters = {
     "epsilon": 0.5
   },
 
+  "pets": {
+    "net_model": [(None, 32), "R", (32, 64), "R", (64, None)],
+    "probabilistic": True, # Whether or not dynamics models output standard deviations alongside means.
+    "num_random_steps": 2000, # Size of random replay memory (disables random mode when full).
+    "batch_size": 256,
+    "model_freq": 10, # Number of steps between model updates.
+    "lr_model": 1e-3, # Learning rate for dynamics model.
+    "replay_capacity": 2000, # Size of replay memory (starts overwriting when full).
+    "batch_ratio": 0.9, # Proportion of on-policy transitions.
+    "cem_iterations": 5, # Number of rounds of distribution refinement during planning.
+    "cem_particles": 50,
+    "cem_elites": 10,
+    "cem_alpha": 0.1, # Update rate for CEM sampling distribution.
+    "gamma": 0.99, # Discount factor.
+    "rollout": {
+      "horizon_params": ("constant", 20),
+    }
+  },
+
   "ppo": {
     "net_pi_cont": [(None, 64), "R", (64, 64), "R", (64, None), "T"], # Tanh policy (bounded in [-1,1]).
     "net_pi_disc": [(None, 64), "R", (64, 64), "R", (64, None), "S"], # Softmax policy for discrete.
@@ -118,25 +137,6 @@ default_hyperparameters = {
     "alpha": 0.2, # Weighting for entropy regularisation term.
     "tau": 0.005, # Parameter for Polyak averaging of target network parameters.
     "update_freq": 1, # Number of timesteps between updates.
-  },
-
-  "simple_model_based": {  
-    "net_model": [(None, 32), "R", (32, 64), "R", (64, None)],
-    "probabilistic": True, # Whether or not dynamics models output standard deviations alongside means.
-    "num_random_steps": 2000, # Size of random replay memory (disables random mode when full).
-    "batch_size": 256,
-    "model_freq": 10, # Number of steps between model updates.
-    "lr_model": 1e-3, # Learning rate for dynamics model.
-    "replay_capacity": 2000, # Size of replay memory (starts overwriting when full).
-    "batch_ratio": 0.9, # Proportion of on-policy transitions.
-    "cem_iterations": 5, # Number of rounds of distribution refinement during planning.
-    "cem_particles": 50,
-    "cem_elites": 10,
-    "cem_alpha": 0.1, # Update rate for CEM sampling distribution.
-    "gamma": 0.99, # Discount factor.
-    "rollout": {
-      "horizon_params": ("constant", 20),
-    }
   },
   
   "stable_baselines": { # NOTE: Other defaults specified in StableBaselines library.

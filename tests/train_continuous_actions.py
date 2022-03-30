@@ -73,7 +73,7 @@ agent_parameters["diayn"] = {
     "alpha":                0.1,
     "tau":                  0.01
 }
-agent_parameters["simple_model_based"] = {
+agent_parameters["pets"] = {
     "input_normaliser":     "box_bounds",
     "reward":               reward_function,
     "ensemble_size":        5,
