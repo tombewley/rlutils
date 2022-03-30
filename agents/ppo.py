@@ -113,11 +113,11 @@ class PpoAgent(Agent):
         self.memory.log_prob.append(self.last_log_prob)
         self.memory.reward.append(reward)
         self.memory.done.append(done)
+        self.total_t += 1
         if self.continuous_actions and self.total_t % self.P["noise_params"][4] == 0: 
             # Decay action standard deviation linearly. 
             self.action_std = max(self.action_std - self.P["noise_params"][3], self.P["noise_params"][2])
             self.noise = torch.full((self.action_dim,), self.action_std**2).to(self.device)
-        self.total_t += 1
 
     def per_episode(self):
         """Operations to perform on each episode end during training."""

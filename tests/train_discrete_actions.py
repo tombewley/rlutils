@@ -53,7 +53,6 @@ elif train_parameters["agent"] == "actor_critic":
 elif train_parameters["agent"] == "simple_model_based":
     from rlutils.specific.CartPole import reward_function
     agent_parameters = {
-        "random_mode_only": False,
         "reward_function": reward_function
     }
 

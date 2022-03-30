@@ -13,11 +13,11 @@ train_parameters = {
     # "env":                  "MountainCarContinuous-v0",
     # "state_dims":           ["pos","vel"],
 
-    "agent":                "steve",
+    "agent":                "mbpo",
     "num_episodes":         100,
     "episode_time_limit":   200,
     "from_pixels":          False,
-    "wandb_monitor":        True,
+    "wandb_monitor":        False,
     "render_freq":          0,
     "video_save_freq":      0,
     "video_to_wandb":       True,
@@ -91,6 +91,16 @@ agent_parameters["steve"] = {**agent_parameters["td3"], **{
     "batch_size":           32,
     "planning": {
         "horizon":          5
+    }
+}}
+agent_parameters["mbpo"] = {**agent_parameters["sac"], **{
+    "input_normaliser":     "box_bounds",
+    "reward":               reward_function,
+    "probabilistic":        False,
+    "num_random_steps":     1000,
+    "model_freq":           600,
+    "planning": {
+      "horizon_params": ("linear", 1, 25, (10, 30))
     }
 }}
 

@@ -15,7 +15,7 @@ def reparameterise(x, clamp=("hard", -20, 2), params=False):
     The reparameterisation trick. 
     Construct a Gaussian from x, taken to parameterise the mean and log standard deviation.
     """
-    mean, log_std = torch.split(x, int(x.shape[1]/2), dim=1)
+    mean, log_std = torch.split(x, int(x.shape[-1]/2), dim=-1)
     # Bounding log_std helps to regulate its behaviour outside the training data (see PETS paper Appendix A.1).
     if clamp[0] == "hard": # This is used by default for the SAC policy.
         log_std = torch.clamp(log_std, clamp[1], clamp[2])

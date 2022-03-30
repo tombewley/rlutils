@@ -24,8 +24,8 @@ default_hyperparameters = {
     "net_pi": [(None, 256), "R", (256, 256), "R", (256, None), "T"], # Tanh policy (bounded in [-1,1]).
     "net_Q": [(None, 256), "R", (256, 256), "R", (256, 1)],
     "input_normaliser": None, # Set to "box_bounds" to pre-normalise network inputs.
-    "replay_capacity": 50000, # Size of replay buffer (starts overwriting when full).
-    "batch_size": 128, # Size of batches to sample from replay buffer during learning.
+    "replay_capacity": 50000, # Size of replay memory (starts overwriting when full).
+    "batch_size": 128, # Size of batches to sample from replay memory during learning.
     "lr_pi": 1e-4, # Learning rate for policy.
     "lr_Q": 1e-3, # Learning rate for state-action value function.
     "gamma": 0.99, # Discount factor.
@@ -41,8 +41,8 @@ default_hyperparameters = {
 
   "dqn": {
     "net_Q": [(None, 256), "R", (256, 128), "R", (128, 64), "R", (64, None)], # From https://github.com/transedward/pytorch-dqn/blob/master/dqn_model.py.
-    "replay_capacity": 10000, # Size of replay buffer (starts overwriting when full).
-    "batch_size": 128, # Size of batches to sample from replay buffer during learning.
+    "replay_capacity": 10000, # Size of replay memory (starts overwriting when full).
+    "batch_size": 128, # Size of batches to sample from replay memory during learning.
     "lr_Q": 1e-3, # Learning rate for state-action value function.
     "gamma": 0.99, # Discount factor.
     "epsilon_start": 0.9,
@@ -52,6 +52,23 @@ default_hyperparameters = {
     # "target_update": ("hard", 10000),
     "double": True, # Whether to enable double DQN variant to reduce overestimation bias.
     "reward_components": None # For reward decomposition (set to None to disable).
+  },
+
+  "mbpo": {
+    "net_model": [(None, 200), "R", (200, 200), "R", (200, 200), "R", (200, 200), "R", (200, None)],
+    "ensemble_size": 7, # Number of parallel dynamics models to train.
+    "probabilistic": True, # Whether or not dynamics models output standard deviations alongside means.
+    "num_random_steps": 1000, # Number of steps before disabling random mode and starting policy optimisation.
+    "model_freq": 250, # Number of steps between model updates.
+    "batch_size_model": 256, # Size of batch to use for model updates.
+    "holdout_ratio_model": 0.2, # Proportion of model batch to use in holdout set.
+    "lr_model": 1e-3, # Learning rate for dynamics model.
+    "rollouts_per_update": 400, # Number of rollouts to perform each time the model is updated.
+    "planning": {
+      "horizon_params": ("linear", 1, 25, (20, 100)), # initial, final, (start of change, end of change) in units of model updates.
+    },
+    "retained_updates": 20, # Number of updates' worth of rollouts to retain in the simulated memory.
+    "gradient_steps_per_update": 20, # For pi/Q; use of model-generated data reduces overfitting risk.
   },
 
   "off_policy_mc": {
@@ -93,31 +110,29 @@ default_hyperparameters = {
     "net_pi": [(None, 256), "R", (256, 256), "R", (256, None)],
     "net_Q": [(None, 256), "R", (256, 256), "R", (256, None)],
     "input_normaliser": None, # Set to "box_bounds" to pre-normalise network inputs.
-    "replay_capacity": 10000, # Size of replay buffer (starts overwriting when full).
-    "batch_size": 256, # Size of batches to sample from replay buffer during learning.
+    "replay_capacity": 10000, # Size of replay memory (starts overwriting when full).
+    "batch_size": 256, # Size of batches to sample from replay memory during learning.
     "lr_pi": 1e-4, # Learning rate for policy.
     "lr_Q": 1e-3, # Learning rate for state-action value function.
     "gamma": 0.99, # Discount factor.
     "alpha": 0.2, # Weighting for entropy regularisation term.
     "tau": 0.005, # Parameter for Polyak averaging of target network parameters.
-    "update_freq": 1, # Number of steps between updates.
+    "update_freq": 1, # Number of timesteps between updates.
   },
 
   "simple_model_based": {  
     "net_model": [(None, 32), "R", (32, 64), "R", (64, None)],
     "probabilistic": True, # Whether or not dynamics models output standard deviations alongside means.
-    "num_random_steps": 2000, # Size of random replay buffer (disables random mode when full).
+    "num_random_steps": 2000, # Size of random replay memory (disables random mode when full).
     "batch_size": 256,
     "model_freq": 10, # Number of steps between model updates.
     "lr_model": 1e-3, # Learning rate for dynamics model.
-    "random_mode_only": False,
-    # --- If not random_mode_only ---
-    "replay_capacity": 2000, # Size of replay buffer (starts overwriting when full).
+    "replay_capacity": 2000, # Size of replay memory (starts overwriting when full).
     "batch_ratio": 0.9, # Proportion of on-policy transitions.
     "planning": {
       "num_iterations": 5,
       "num_particles": 50,
-      "horizon": 20,
+      "horizon_params": ("constant", 20),
       "gamma": 0.99, # Discount factor.
       # --- If num_iterations > 1 ---
       "num_elites": 10,
@@ -132,20 +147,20 @@ default_hyperparameters = {
 
   "steve": {
     "net_model": [(None, 32), "R", (32, 64), "R", (64, None)],
-    "num_random_steps": 1000, # Number of steps before disabling random mode and starting learning.
     "ensemble_size": 2, # Number of parallel dynamics models to train.
+    "num_random_steps": 1000, # Number of steps before disabling random mode and starting policy optimisation.
     "model_freq": 1, # Number of steps between model updates.
     "lr_model": 1e-3, # Learning rate for dynamics model.
     "planning": {
-      "horizon": 5, # Maximum number of model steps to run to produce Q values.
+      "horizon_params": ("constant", 5), # Maximum number of model steps to run to produce Q values.
     },
     "td3": True # STEVE is built around DDPG, and needs multiple Q_target networks.
   },
 
   "treeqn": {
     "net_node": [(None, 32), "R", (32, None)], 
-    "replay_capacity": 10000, # Size of replay buffer (starts overwriting when full).
-    "batch_size": 128, # Size of batches to sample from replay buffer during learning.
+    "replay_capacity": 10000, # Size of replay memory (starts overwriting when full).
+    "batch_size": 128, # Size of batches to sample from replay memory during learning.
     "lr_Q": 1e-3, # Learning rate for state-action value function.
     "gamma": 0.99, # Discount factor.
     "epsilon_start": 0.9,

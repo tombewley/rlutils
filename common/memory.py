@@ -39,7 +39,7 @@ class ReplayMemory:
                 with torch.no_grad(): el.append(self.reward(state, action, next_state)) # Eagerly compute intrinsic reward.           
             else: el.append(torch.tensor(reward, device=state.device, dtype=torch.float).unsqueeze(0))
         # Extend memory if capacity not yet reached.
-        if len(self.memory) < self.capacity: self.memory.append(None) 
+        if len(self) < self.capacity: self.memory.append(None)
         # Overwrite current entry at this position.
         self.memory[self.position] = el # self.element(*el)
         # Increment position, cycling back to the beginning if needed.

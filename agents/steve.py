@@ -25,8 +25,6 @@ class SteveAgent(DdpgAgent):
         # Create dynamics model.
         self.P["planning"]["num_iterations"] = 1
         self.P["planning"]["num_particles"] = self.P["ensemble_size"]
-        assert "gamma" not in self.P["planning"], "Planning needs to inherit agent-level gamma."
-        self.P["planning"]["gamma"] = self.P["gamma"]
         self.model = DynamicsModel(code=self.P["net_model"], observation_space=self.env.observation_space, action_space=self.env.action_space,
                                      reward_function=self.P["reward"], ensemble_size=self.P["ensemble_size"], planning_params=self.P["planning"],
                                      lr=self.P["lr_model"], device=self.device)
@@ -46,20 +44,17 @@ class SteveAgent(DdpgAgent):
             if do_extra: 
                 action_torch = torch.tensor(action, device=self.device).unsqueeze(0)
                 extra["next_state_pred"] = self.model.predict(state, action_torch)[0].cpu().numpy()
-                # NOTE: misleading as uses simulated next state rather than true one.
-                # extra["reward_components"] = self.P["reward"](state, action, sim_next_state)[0]
             return action, extra
 
-    def update_on_batch(self, model_only=False):
-        """Use a random batch from the replay memory to update the model, pi and Q network parameters."""
+    def update_on_batch(self):
+        """Use random batches from the replay memory to update the model. Then sample an independent batch
+        and use the model for value expansion when updating pi and Q network parameters."""
         if self.total_t % self.P["model_freq"] == 0:
             # Optimise each network in the model ensemble on an independent batch.
             for i in range(self.P["ensemble_size"]):
                 states, actions, _, _, next_states = self.memory.sample(self.P["batch_size"], keep_terminal_next=True)
                 if states is None: return 
-                # Keeping separate prevents confusing the DDPG methods.
                 self.ep_losses_model.append(self.model.update_on_batch(states, actions, next_states, i))
-        if model_only: return self.ep_losses_model[-1]
         
         # TODO: Handle termination via nonterminal_mask.
 
@@ -69,8 +64,8 @@ class SteveAgent(DdpgAgent):
             n, e, h, b = len(self.Q_target), self.P["ensemble_size"], self.model.P["horizon"], self.P["batch_size"]
             Q_targets = torch.zeros((n, e, h+1, b), device=self.device)
             sim_actions = torch.empty((e, h+1, b, actions.shape[1]), device=self.device)
-            # Simulate forward dynamics from next_states using each network in the ensemble, using the pi_target for action selection.
-            sim_states, sim_actions[:,:-1], Q_targets[:,:,1:] = self.model.plan(next_states, policy=self.pi_target, ensemble_index=list(range(self.P["ensemble_size"])))
+            # Simulate forward dynamics from next_states using each network in the ensemble, consulting pi_target for action selection.
+            sim_states, sim_actions[:,:-1], Q_targets[:,:,1:] = self.model.plan(next_states, policy=self.pi_target_scaled, ensemble_index=list(range(self.P["ensemble_size"])))
             sim_states = sim_states.squeeze(0)
             Q_targets[:,:,1:] *= self.model.P["gamma"] # Discount simulated returns.
             sim_actions[:,-1] = self._action_scale(self.pi_target(sim_states[:,-1])) # Use pi_target again on the last states. 
@@ -81,7 +76,7 @@ class SteveAgent(DdpgAgent):
             for j, target_net in enumerate(self.Q_target):
                 Q_targets[j] += gamma_range * target_net(col_concat(sim_states, sim_actions)).squeeze(3)
 
-            if False: # Old method for sanity checking
+            if True: # Old method for sanity checking
             
                 print(Q_targets[:,:,-1])
                 
@@ -89,7 +84,7 @@ class SteveAgent(DdpgAgent):
                 Q_targets = torch.zeros((self.P["batch_size"], self.model.P["horizon"]+1, self.P["ensemble_size"], len(self.Q_target)))
                 # Compute model-free targets.
                 rewards = self.model.reward_function(states, actions, next_states).reshape(-1,1)
-                next_actions = self._action_scale(self.pi_target(next_states)) # Select a' using the target pi network.
+                next_actions = self.pi_target_scaled(next_states) # Select a' using the target pi network.
                 for j, target_net in enumerate(self.Q_target):
                     # Same target for all models at this point.
                     Q_targets[:,0,:,j] = (rewards 
@@ -101,7 +96,7 @@ class SteveAgent(DdpgAgent):
                     for h in range(1, self.model.P["horizon"]+1):
                         # Use model and target pi network to get next states and actions.
                         sim_next_states = self.model.predict(sim_states, sim_actions, ensemble_index=i)
-                        sim_next_actions = self._action_scale(self.pi_target(sim_next_states))
+                        sim_next_actions = self.pi_target_scaled(sim_next_states)
                         # Use reward function to get reward for simulated state-action-next-state tuple and add to cumulative return.
                         sim_rewards = self.model.reward_function(sim_states, sim_actions, sim_next_states).reshape(-1,1)
                         assert sim_rewards.shape == (self.P["batch_size"], 1)
@@ -140,3 +135,6 @@ class SteveAgent(DdpgAgent):
         logs["random_mode"] = int(self.random_mode)
         del self.ep_losses_model[:]; del self.ep_model_usage[:]
         return logs
+
+    def pi_target_scaled(self, states):
+        return self._action_scale(self.pi_target(states))

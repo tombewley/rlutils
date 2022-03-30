@@ -70,7 +70,7 @@ class DdpgAgent(Agent):
                         ).clamp(-self.P["td3_noise_clip"], self.P["td3_noise_clip"])
                 nonterminal_next_actions = (nonterminal_next_actions + noise).clamp(-1, 1)
             # Use target Q networks to compute Q_target(s', a') for each nonterminal next state and take the minimum value. This is the "clipped double Q trick".
-            next_Q_values = torch.zeros(self.P["batch_size"], device=self.device)
+            next_Q_values = torch.zeros(states.shape[0], device=self.device)
             next_Q_values[nonterminal_mask] = torch.min(*(Q_target(col_concat(nonterminal_next_states, nonterminal_next_actions)) for Q_target in self.Q_target)).squeeze()       
             # Compute target = reward + discounted Q_target(s', a').
             Q_targets = (rewards + (self.P["gamma"] * next_Q_values)).detach()
@@ -94,10 +94,10 @@ class DdpgAgent(Agent):
     def per_timestep(self, state, action, reward, next_state, done, suppress_update=False):
         """Operations to perform on each timestep during training."""
         self.memory.add(state, action, reward, next_state, done)               
+        self.total_t += 1
         if not suppress_update:
             losses = self.update_on_batch()
             if losses: self.ep_losses.append(losses)
-        self.total_t += 1
 
     def per_episode(self):
         """Operations to perform on each episode end during training."""

@@ -20,6 +20,7 @@ def make(agent, env, hyperparameters=dict()):
     elif agent == "ddpg":               from ..agents.ddpg import DdpgAgent as agent_class
     elif agent == "diayn":              from ..agents.diayn import DiaynAgent as agent_class
     elif agent == "dqn":                from ..agents.dqn import DqnAgent as agent_class
+    elif agent == "mbpo":               from ..agents.mbpo import MbpoAgent as agent_class
     elif agent == "off_policy_mc":      from ..agents.off_policy_mc import OffPolicyMCAgent as agent_class
     elif agent == "ppo":                from ..agents.ppo import PpoAgent as agent_class
     elif agent == "random":             from ..agents.random_agent import RandomAgent as agent_class

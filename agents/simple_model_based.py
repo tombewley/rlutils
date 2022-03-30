@@ -21,9 +21,8 @@ class SimpleModelBasedAgent(Agent):
                                    ensemble_size=self.P["ensemble_size"], planning_params=self.P["planning"], device=self.device)
         # Create replay memory in two components: one for random transitions one for on-policy transitions.
         self.random_memory = ReplayMemory(self.P["num_random_steps"])
-        if not self.P["random_mode_only"]:
-            self.memory = ReplayMemory(self.P["replay_capacity"])
-            self.batch_split = (round(self.P["batch_size"] * self.P["batch_ratio"]), round(self.P["batch_size"] * (1-self.P["batch_ratio"])))
+        self.memory = ReplayMemory(self.P["replay_capacity"])
+        self.batch_split = (round(self.P["batch_size"] * self.P["batch_ratio"]), round(self.P["batch_size"] * (1-self.P["batch_ratio"])))
         # Tracking variables.
         self.random_mode = True
         self.total_t = 0 # Used for model_freq.
@@ -68,7 +67,7 @@ class SimpleModelBasedAgent(Agent):
 
     def per_timestep(self, state, action, reward, next_state, done):
         """Operations to perform on each timestep during training."""
-        if not self.P["random_mode_only"] and self.random_mode and len(self.random_memory) >= self.P["num_random_steps"]: 
+        if self.random_mode and len(self.random_memory) >= self.P["num_random_steps"]:
             self.random_mode = False
             print("Random data collection complete.")
         if self.random_mode: self.random_memory.add(state, action, reward, next_state, done)
