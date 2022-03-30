@@ -4,7 +4,6 @@ from .logger import Logger
 import os
 import torch
 from numpy import argwhere
-from joblib import load as load_jl, dump
 
 
 class PbrlObserver:
@@ -206,7 +205,7 @@ class PbrlObserver:
     def save(self, history_key):
         path = f"models/{self.run_names[-1]}"
         if not os.path.exists(path): os.makedirs(path)
-        dump({
+        torch.save({
               "episodes": self.episodes,
               "Pr": self.Pr,
               "model": self.model
@@ -216,7 +215,7 @@ def load(fname, P, features):
     """
     Make an instance of PbRLObserver from the information stored by the .save() method.
     """
-    dict = load_jl(fname)
+    dict = torch.load(fname, torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     pbrl = PbrlObserver(P, features=features, episodes=dict["episodes"])
     pbrl.Pr = dict["Pr"]
     if dict["model"] is not None:
