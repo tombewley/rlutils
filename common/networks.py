@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from gym.spaces.space import Space
 from gym.spaces.box import Box
 
 
@@ -51,8 +52,8 @@ class SequentialNetwork(nn.Module):
 
 
 def code_parser(code, input_space, output_size):
-    # NOTE: Only works for a list of Box subspaces.
-    assert type(input_space) == list and all(type(subspace) == Box for subspace in input_space)
+    # NOTE: Only works for a list of gym Spaces.
+    assert type(input_space) == list and all(isinstance(subspace, Space) for subspace in input_space)
     input_size = sum(subspace.shape[0] for subspace in input_space)
     layers = []
     for l in code:
@@ -75,7 +76,7 @@ class BoxNormalise(nn.Module):
     """
     def __init__(self, space, device):
         super(BoxNormalise, self).__init__()
-        assert type(space) == list and all(type(subspace) == Box for subspace in space)
+        assert type(space) == list and all(isinstance(subspace, Box) for subspace in space)
         rnge, shift = [], []
         for subspace in space:
             r = ((subspace.high - subspace.low) / 2.0)

@@ -6,6 +6,7 @@ import numpy as np
 from scipy.special import xlogy, xlog1py
 from scipy.stats import norm as norm_s
 from tqdm import tqdm
+from gym.spaces.space import Space
 
 
 norm = torch.distributions.Normal(0, 1)
@@ -22,7 +23,7 @@ class RewardNet:
         self.device = device
         self.P = P
         self.net = SequentialNetwork(device=self.device,
-            input_shape=len(feature_names),
+            input_space=[Space((len(feature_names),))],
             # Mean and log standard deviation
             output_size=2, 
             # 3x 256 hidden units used in PEBBLE paper
