@@ -13,12 +13,12 @@ train_parameters = {
     # "env":                  "MountainCarContinuous-v0",
     # "state_dims":           ["pos","vel"],
 
-    "agent":                "mbpo",
+    "agent":                "sac",
     
     "num_episodes":         100,
     "episode_time_limit":   200,
     "from_pixels":          False,
-    "wandb_monitor":        False,
+    "wandb_monitor":        True,
     "render_freq":          0,
     "video_save_freq":      0,
     "video_to_wandb":       True,

@@ -13,7 +13,7 @@ train_parameters = {
     "env":          "CartPole-v1",
     "state_dims":   ["pos","vel","ang","ang_vel"],
 
-    "agent":                "actor_critic",
+    "agent":                "dqn",
 
     "num_episodes":         1500,
     "episode_time_limit":   500,
@@ -41,11 +41,11 @@ else: state_shape, renderer = env.observation_space.shape, None
 agent_parameters = {
     "dqn": {
         # "input_normaliser": "box_bounds",
-        "replay_capacity":  10000,
+        "replay_capacity":  1e5,
         "batch_size":       32,
         "epsilon_start":    1,
         "epsilon_end":      0.05,
-        "epsilon_decay":    10000,
+        "epsilon_decay":    20000,
         "target_update":    ("soft", 0.0005),
         "double":           True
     },

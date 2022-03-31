@@ -38,8 +38,9 @@ class ActorCriticAgent(Agent):
         # Calculate TD target for value function.
         td_target = reward + (self.P["gamma"] * \
                              (torch.tensor(0., device=self.device) if done else self.V(next_state).squeeze()))
-        # Update value in the direction of TD error using Huber loss.
-        value_loss = F.smooth_l1_loss(self.last_value, td_target)
+        # Update value in the direction of TD error using MSE loss (NOTE: seems to outperform Huber on CartPole!)
+        value_loss = F.mse_loss(self.last_value, td_target)
+        # value_loss = F.smooth_l1_loss(self.last_value, td_target)
         self.V.optimise(value_loss)
         # Update policy in the direction of log_prob(a) * TD error.
         policy_loss = -self.last_log_prob * (td_target - self.last_value).detach()
