@@ -55,7 +55,7 @@ class PetsAgent(Agent):
                 mean[0], std[0] = self.act_b, self.act_k
                 actions = torch.empty((self.P["cem_iterations"], self.P["cem_particles"], self.model.horizon, 1, action_dim), device=self.device)
                 returns = torch.zeros((self.P["cem_iterations"], self.P["cem_particles"]                                   ), device=self.device)
-                gamma_range = torch.tensor([self.P["gamma"]**t for t in range(self.model.horizon)]).reshape(1,-1,1)
+                gamma_range = torch.tensor([self.P["gamma"]**t for t in range(self.model.horizon)], device=self.device).reshape(1,-1,1)
                 for i in range(self.P["cem_iterations"]):
                     if i > 0:
                         # Update sampling distribution using elites from previous iteration.

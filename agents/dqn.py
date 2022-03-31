@@ -8,19 +8,22 @@ import torch.nn.functional as F
 
 
 class DqnAgent(Agent):
+    """
+    Deep Q Network (DQN). From:
+        Mnih, Volodymyr, Koray Kavukcuoglu, David Silver, Andrei A. Rusu, Joel Veness, Marc G. Bellemare, Alex Graves et al.
+        "Human-level Control through Deep Reinforcement Learning." 
+        Nature 518, no. 7540 (2015): 529-533.
+    """
     def __init__(self, env, hyperparameters):
-        """
-        DESCRIPTION
-        """
         Agent.__init__(self, env, hyperparameters)
         # Create Q network.
-        m = (1 if self.P["reward_components"] is None else self.P["reward_components"])
-        if len(self.env.observation_space.shape) > 1: 
-            net_preset = "CartPoleQ_Pixels"
-            net_code, input_shape, output_size = None, self.env.observation_space.shape, self.env.action_space.n*m
-        else: net_code, net_preset, input_shape, output_size = self.P["net_Q"], None, self.env.observation_space.shape[0], self.env.action_space.n*m
-        self.Q = SequentialNetwork(code=net_code, preset=net_preset, input_shape=input_shape, output_size=output_size, lr=self.P["lr_Q"], clip_grads=True, device=self.device)
-        self.Q_target = SequentialNetwork(code=net_code, preset=net_preset, input_shape=input_shape, output_size=output_size, eval_only=True, device=self.device)
+        if len(self.env.observation_space.shape) > 1: net_preset, net_code = "CartPoleQ_Pixels", None
+        else: net_preset, net_code = None, self.P["net_Q"]
+        output_size = self.env.action_space.n * (1 if self.P["reward_components"] is None else self.P["reward_components"])
+        self.Q = SequentialNetwork(code=net_code, preset=net_preset, input_space=[self.env.observation_space], output_size=output_size,
+                                   normaliser=self.P["input_normaliser"], lr=self.P["lr_Q"], clip_grads=True, device=self.device)
+        self.Q_target = SequentialNetwork(code=net_code, preset=net_preset, input_space=[self.env.observation_space], output_size=output_size,
+                                          normaliser=self.P["input_normaliser"], eval_only=True, device=self.device)
         self.Q_target.load_state_dict(self.Q.state_dict()) # Clone.
         # Create replay memory.
         self.memory = ReplayMemory(self.P["replay_capacity"])

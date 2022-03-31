@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 from gym.spaces.space import Space
 from gym.spaces.box import Box
+from numpy import finfo, float32
 
 
 class SequentialNetwork(nn.Module):
@@ -74,12 +75,16 @@ class BoxNormalise(nn.Module):
     """
     Normalise into [-1, 1] using the bounds of a list of Box subspaces.
     """
+
+    max_range = finfo(float32).max
+    
     def __init__(self, space, device):
         super(BoxNormalise, self).__init__()
         assert type(space) == list and all(isinstance(subspace, Box) for subspace in space)
         rnge, shift = [], []
         for subspace in space:
             r = ((subspace.high - subspace.low) / 2.0)
+            assert (r < self.max_range).all(), f"{subspace} has invalid range(s): {r}"
             rnge += list(r)
             shift += list(r + subspace.low)
         self.range, self.shift = torch.tensor(rnge, device=device), torch.tensor(shift, device=device)

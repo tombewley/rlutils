@@ -65,7 +65,7 @@ class SteveAgent(DdpgAgent):
             sim_states, sim_actions[:,:-1], sim_rewards[:,1:] = self.model.rollout(next_states, policy=self.pi_target_scaled, ensemble_index=list(range(self.P["ensemble_size"])))
             sim_actions[:,-1] = self.pi_target_scaled(sim_states[:,-1]) # Use pi_target again on the last states.
             # Discount the rewards and take cumulative sum to yield returns up to each horizon.
-            gamma_range = torch.tensor([self.P["gamma"]**t for t in range(self.model.horizon+2)]).reshape(1,-1,1)
+            gamma_range = torch.tensor([self.P["gamma"]**t for t in range(self.model.horizon+2)], device=self.device).reshape(1,-1,1)
             sim_returns = torch.cumsum(gamma_range[:,:-1] * sim_rewards, dim=1)
             # Finally, add discounted Q values as predicted by each Q_target network.
             Q_targets = torch.cat([(sim_returns + (gamma_range[:,1:] * target_net(col_concat(sim_states, sim_actions)).squeeze(3))

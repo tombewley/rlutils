@@ -14,6 +14,7 @@ train_parameters = {
     # "state_dims":           ["pos","vel"],
 
     "agent":                "mbpo",
+    
     "num_episodes":         100,
     "episode_time_limit":   200,
     "from_pixels":          False,
@@ -110,7 +111,7 @@ agent_parameters["mbpo"] = {**agent_parameters["sac"], **{
 a = train_parameters["agent"]
 agent = make(a, env, agent_parameters[a])
 print(agent)
-obs = Observer(P={"save_freq": np.inf}, state_dims=train_parameters["state_dims"], action_dims=1)
+obs = Observer(P={"save_freq": float("inf")}, state_dims=train_parameters["state_dims"], action_dims=1)
 _, rn = train(agent, train_parameters, observers={"observer": obs})
 
 if train_parameters["observe_freq"]:

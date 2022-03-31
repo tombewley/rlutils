@@ -83,7 +83,7 @@ class PpoAgent(Agent):
             surr1 = ratios * advantages
             surr2 = torch.clamp(ratios, 1-self.P["epsilon"], 1+self.P["epsilon"]) * advantages
             
-            # Update value using MSE loss.
+            # Update value using MSE loss. TODO: Huber?
             value_loss = F.mse_loss(values, returns)
             self.V.optimise(value_loss) 
 

@@ -7,6 +7,7 @@ default_hyperparameters = {
   "actor_critic": {
     "net_pi": [(None, 64), "R", (64, 128), "R", (128, None), "S"], # Softmax policy.
     "net_V": [(None, 64), "R", (64, 128), "R", (128, None)],
+    "input_normaliser": None, # Set to "box_bounds" to pre-normalise network inputs.
     "lr_pi": 1e-4, # Learning rate for policy.
     "lr_V": 1e-3, # Learning rate for state value function.
     "gamma": 0.99 # Discount factor.
@@ -41,6 +42,7 @@ default_hyperparameters = {
 
   "dqn": {
     "net_Q": [(None, 256), "R", (256, 128), "R", (128, 64), "R", (64, None)], # From https://github.com/transedward/pytorch-dqn/blob/master/dqn_model.py.
+    "input_normaliser": None, # Set to "box_bounds" to pre-normalise network inputs.
     "replay_capacity": 10000, # Size of replay memory (starts overwriting when full).
     "batch_size": 128, # Size of batches to sample from replay memory during learning.
     "lr_Q": 1e-3, # Learning rate for state-action value function.
@@ -117,6 +119,7 @@ default_hyperparameters = {
 
   "reinforce": {
     "net_pi": [(None, 64), "R", (64, 128), "R", (128, None), "S"], # Softmax policy.
+    "input_normaliser": None, # Set to "box_bounds" to pre-normalise network inputs.
     "lr_pi": 1e-4, # Learning rate for policy.
     "gamma": 0.99, # Discount factor.
     "baseline": "adv", # Baselining method: either "off", "Z" or "adv".
@@ -157,7 +160,8 @@ default_hyperparameters = {
   },
 
   "treeqn": {
-    "net_node": [(None, 32), "R", (32, None)], 
+    "net_node": [(None, 32), "R", (32, None)],
+    "input_normaliser": None, # Set to "box_bounds" to pre-normalise network inputs.
     "replay_capacity": 10000, # Size of replay memory (starts overwriting when full).
     "batch_size": 128, # Size of batches to sample from replay memory during learning.
     "lr_Q": 1e-3, # Learning rate for state-action value function.

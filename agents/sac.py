@@ -11,7 +11,10 @@ import torch.nn.functional as F
 
 class SacAgent(Agent):
     """
-    Soft actor-critic (SAC) agent for continuous action spaces.
+    Soft actor-critic (SAC). From:
+        Haarnoja, Tuomas, Aurick Zhou, Kristian Hartikainen, George Tucker, Sehoon Ha, Jie Tan, Vikash Kumar et al.
+        "Soft actor-critic algorithms and applications."
+        arXiv preprint arXiv:1812.05905 (2018).
     """
     def __init__(self, env, hyperparameters):
         Agent.__init__(self, env, hyperparameters)
@@ -19,7 +22,7 @@ class SacAgent(Agent):
         input_pi = self.P["aug_obs_space"] if "aug_obs_space" in self.P else [self.env.observation_space]
         # Create pi network; outputs mean and standard deviation.
         self._pi = SequentialNetwork(code=self.P["net_pi"], input_space=input_pi, output_size=2*self.env.action_space.shape[0],
-                                    normaliser=self.P["input_normaliser"], lr=self.P["lr_pi"], device=self.device)
+                                     normaliser=self.P["input_normaliser"], lr=self.P["lr_pi"], device=self.device)
         # Create two Q networks, each with their corresponding targets.
         input_Q = input_pi + [self.env.action_space]
         self.Q, self.Q_target = [], []
