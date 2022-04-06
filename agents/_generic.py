@@ -33,14 +33,20 @@ class Agent:
         """Rescale continuous actions from [-1,1] to action space extents."""
         return (self.act_k * actions) + self.act_b
 
-    def save(self, path, clear_memory=True): 
+    def save(self, path, clear_memory=True, clear_reward=True):
         # Remove env for saving; stops pickle from throwing an error.
         env = self.env; self.env = None 
         if clear_memory: 
             try: memory = self.memory; self.memory = None
             except: pass # If no memory.
+        if clear_reward:
+            try: reward = self.reward; self.reward = None
+            except: pass # If no reward function.
         torch.save(self, f"{path}.agent")
         self.env = env
         if clear_memory: 
             try: self.memory = memory
+            except: pass
+        if clear_reward:
+            try: self.reward = reward
             except: pass
