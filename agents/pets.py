@@ -14,7 +14,7 @@ class PetsAgent(Agent):
         "Deep reinforcement learning in a handful of trials using probabilistic dynamics models." 
         Advances in Neural Information Processing Systems 31 (2018).
 
-    Also likely to retain some details of the model-based component from:
+    Also likely to retain some details of the model-based component of MBMF. From:
         "Neural Network Dynamics for Model-Based Deep Reinforcement Learning with Model-Free Fine-Tuning"
     """
     def __init__(self, env, hyperparameters):
@@ -33,8 +33,8 @@ class PetsAgent(Agent):
         self.batch_split = (round(self.P["batch_size"] * self.P["batch_ratio"]), round(self.P["batch_size"] * (1-self.P["batch_ratio"])))
         # Tracking variables.
         self.random_mode = True
-        self.total_t = 0 # Used for model_freq.
-        self.ep_losses = []
+        self.t, self.total_t = 0, 0
+        self.ep_action_stds, self.ep_losses = [], []
 
     def act(self, state, explore=True, do_extra=False):
         """Either random or model-based action selection."""
@@ -65,12 +65,13 @@ class PetsAgent(Agent):
                     # Sample action sequences from truncated normal parameterised by mean/std and action space bounds.
                     actions[i] = truncated_normal(actions[i], mean=mean[i], std=std[i], a=self.action_space_low, b=self.action_space_high)
                     # Propogate action sequences through the model.
-                    states, _, rewards = self.model.rollout(state, actions=actions[i], ensemble_index="ts1")
+                    states, _, rewards = self.model.rollout(state, actions=actions[i], ensemble_index="ts1_a")
                     returns[i] = (gamma_range * rewards).sum(axis=1).squeeze()
                     elites = returns[i].topk(self.P["cem_elites"]).indices
                 best = elites[0]
-                action = actions[-1,best,0] # Take first action only
-                action = action.cpu().numpy()[0] if self.continuous_actions else action.item()
+                action = actions[-1,best,0].squeeze(0) # Take first action only
+                action = action.cpu().numpy() if self.continuous_actions else action.item()
+                self.ep_action_stds.append((std[-1,0] / self.act_k).mean().item())
                 if do_extra: 
                     extra["g_pred"] = returns[-1,best].item()
                     extra["next_state_pred"] = states[best,1].cpu().numpy()
@@ -101,11 +102,29 @@ class PetsAgent(Agent):
             print("Random data collection complete.")
         if self.random_mode: self.random_memory.add(state, action, reward, next_state, done)
         else: self.memory.add(state, action, reward, next_state, done)
-        self.total_t += 1
+        self.t += 1; self.total_t += 1
         if self.P["model_freq"] > 0 and self.total_t % self.P["model_freq"] == 0: self.update_on_batch()
 
     def per_episode(self):
         """Operations to perform on each episode end during training."""
-        mean_loss = mean(self.ep_losses) if self.ep_losses else 0.
-        del self.ep_losses[:]
-        return {"model_loss": mean_loss, "random_mode": int(self.random_mode)}
+        logs = {"model_loss": mean(self.ep_losses) if self.ep_losses else 0., "random_mode": int(self.random_mode),
+                "next_action_std": mean(self.ep_action_stds) if self.ep_action_stds else 0.}
+        if self.P["rollout_review"] and self.total_t > self.P["num_random_steps"]: # NOTE: Ignores random memory.
+            
+            states, actions, _, _, next_states = self.memory.sample(self.t, mode="latest", keep_terminal_next=True)
+            if states is not None:
+                states = torch.cat([states, next_states[-1:]], dim=0) # Add final state.
+                import matplotlib.pyplot as plt
+                with torch.no_grad():
+                    # Rollout the latest episode's action sequence from the initial state.
+                    N = 20
+                    sim_states, _, _ = self.model.rollout(states[0].unsqueeze(0), actions=actions.expand(N,-1,-1).unsqueeze(2), ensemble_index="ts1_b")
+                    sim_states = sim_states.squeeze(2)
+
+                    _, ax = plt.subplots()
+                    for s in sim_states: ax.plot(s[:,0], s[:,1], c="gray", lw=0.5)
+                    ax.plot(states[:,0], states[:,1], c="k", lw=2)
+                    plt.show()
+
+        del self.ep_action_stds[:], self.ep_losses[:]; self.t = 0
+        return logs

@@ -44,8 +44,8 @@ class MbpoAgent(SacAgent):
             return action, extra
 
     def update_on_batch(self):
-        """Use random batches from the replay memory to update the model. Then sample a batch of "seed" states,
-        use the model to generate synthetic transitions to add to rollouts."""
+        """Use random batches from the replay memory to update the model. Then sample a batch of "seed" states
+        and use the model to generate synthetic transitions for training pi/Q. This follows the Dyna strategy."""
         if self.total_t % self.P["model_freq"] == 0:
             # Optimise each network in the model ensemble on an independent batch.
             for i in range(self.P["ensemble_size"]):

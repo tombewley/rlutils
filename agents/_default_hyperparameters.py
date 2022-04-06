@@ -63,7 +63,6 @@ default_hyperparameters = {
     "num_random_steps": 1000, # Number of steps before disabling random mode and starting policy optimisation.
     "model_freq": 250, # Number of steps between model updates.
     "batch_size_model": 256, # Size of batch to use for model updates.
-    "holdout_ratio_model": 0.2, # Proportion of model batch to use in holdout set.
     "lr_model": 1e-3, # Learning rate for dynamics model.
     "rollouts_per_update": 400, # Number of rollouts to perform each time the model is updated.
     "rollout": {

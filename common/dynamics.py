@@ -33,8 +33,6 @@ class DynamicsModel:
         self.action_dim = action_space.shape[0]
         # Weight model loss function by bounds of observation space.
         self.loss_weights = torch.tensor(1. / (observation_space.high - observation_space.low), device=device)
-
-
         # NOTE: Currently MBRL-Lib says fixed bounds "work better" than learnt ones. Using values from there (note std instead of var).
         if self.probabilistic: self.log_std_clamp = ("hard", -20, 2) # ("soft", -20, 2)
         # Tracking variables.
@@ -50,9 +48,10 @@ class DynamicsModel:
         elif type(ensemble_index) == list: # Use a specified member for each pair.
             assert len(ensemble_index) == states_and_actions.shape[0]
             ds = torch.cat([self.nets[ensemble_index[i]](sa).unsqueeze(0) for i, sa in enumerate(states_and_actions)], dim=0)
-        elif ensemble_index == "ts1": # Uniform-randomly sample a member to use for all pairs.
-            # TODO: verify that this is the correct approach.
+        elif ensemble_index == "ts1_a": # Uniform-randomly sample a common member to use for all pairs.
             ds = choice(self.nets)(states_and_actions)
+        elif ensemble_index == "ts1_b": # Uniform-randomly sample a member to use for each pair.
+            ds = torch.cat([choice(self.nets)(sa).unsqueeze(0) for sa in states_and_actions], dim=0)
         elif ensemble_index == "all": # Use the entire ensemble for all pairs.
             print("TODO: test that this works with self.probabilistic=True")
             ds = torch.cat([net(states_and_actions).unsqueeze(2) for net in self.nets], dim=2)
@@ -68,17 +67,17 @@ class DynamicsModel:
         """
         batch_size = states_init.shape[0]
         if actions is not None:
-            assert torch.is_tensor(actions) and actions.shape[1:] == (self.horizon, batch_size, self.action_dim)
-            using_policy, num_particles = False, actions.shape[0]
+            assert torch.is_tensor(actions) and actions.shape[2:] == (batch_size, self.action_dim)
+            using_policy, (num_particles, horizon) = False, actions.shape[:2]
         elif policy is not None:
             assert callable(policy)
-            using_policy, num_particles = True, self.P["num_particles"]
-            actions = torch.empty((num_particles, self.horizon,   batch_size, self.action_dim     ), device=states_init.device)
+            using_policy, num_particles, horizon = True, self.P["num_particles"], self.horizon
+            actions = torch.empty((num_particles, horizon,   batch_size, self.action_dim     ), device=states_init.device)
         else: raise ValueError("Must provide either policy or actions.")
-        states      = torch.empty((num_particles, self.horizon+1, batch_size, states_init.shape[1]), device=states_init.device)
-        rewards     = torch.zeros((num_particles, self.horizon,   batch_size                      ), device=states_init.device)
+        states      = torch.empty((num_particles, horizon+1, batch_size, states_init.shape[1]), device=states_init.device)
+        rewards     = torch.zeros((num_particles, horizon,   batch_size                      ), device=states_init.device)
         states[:,0] = states_init
-        for t in range(self.horizon):
+        for t in range(horizon):
             if using_policy: actions[:,t] = policy(states[:,t]) # If using a policy, action selection is closed-loop.
             states[:,t+1] = self.predict(states[:,t], actions[:,t], ensemble_index)
             rewards[:,t]  = self.reward_function(states[:,t], actions[:,t], states[:,t+1])
@@ -94,7 +93,7 @@ class DynamicsModel:
 
         if not self.probabilistic:
             # Update model in the direction of the true state derivatives using weighted MSE loss.
-            loss = (self.loss_weights * (self.predict(states, actions, ensemble_index=ensemble_index) - next_states) ** 2).mean()
+            loss = ((self.loss_weights * (self.predict(states, actions, ensemble_index=ensemble_index) - next_states)) ** 2).mean()
         else:
             raise NotImplementedError("Haven't implemented weighting (careful with variance!)")
             # Update model using Gaussian negative log likelihood loss (see PETS paper equation 1).
