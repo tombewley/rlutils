@@ -326,8 +326,9 @@ class RewardTree:
         return loss, pair_diff[0], pair_var[0]
         
     def features_to_indices(self, features):
-        return [self.tree.leaves.index(next(iter(
-                self.tree.propagate([None,None]+list(f), mode="max")))) for f in features.cpu().numpy()]
+        def get_index(f):
+            return self.tree.leaves.index(next(iter(self.tree.propagate([None,None]+list(f), mode="max"))))
+        return np.apply_along_axis(get_index, -1, features.cpu().numpy())
 
     def n(self, features):
         n = torch.zeros(self.m, device=self.device)

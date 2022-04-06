@@ -61,7 +61,7 @@ class PbrlObserver:
         Map an array of transitions to an array of features.
         """
         if self.features is None: return transitions
-        return torch.cat([self.features[f](transitions).reshape(-1,1) for f in self.feature_names], dim=1)
+        return torch.cat([self.features[f](transitions).unsqueeze(-1) for f in self.feature_names], dim=-1)
 
     def reward(self, states, actions, next_states, return_params=False):
         """
@@ -116,7 +116,7 @@ class PbrlObserver:
         # Assemble data structures needed for learning
         A, y, i_list, j_list, connected = self.construct_A_and_y()
         print(f"Connected episodes: {len(connected)} / {len(self.episodes)}")
-        if len(connected) == 0: print("=== None connected ==="); return
+        if len(connected) == 0: print("=== None connected ==="); return {}
         ep_lengths = [len(self.episodes[i]) for i in connected]
         # Apply feature mapping to all episodes that are connected to the preference graph
         features = self.feature_map(torch.cat([self.episodes[i] for i in connected]))
