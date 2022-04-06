@@ -39,7 +39,7 @@ class ReplayMemory:
                 with torch.no_grad(): el.append(self.reward(state, action, next_state)) # Eagerly compute intrinsic reward.           
             else: el.append(torch.tensor(reward, device=state.device, dtype=torch.float).unsqueeze(0))
         # Extend memory if capacity not yet reached.
-        if len(self.memory) < self.capacity: self.memory.append(None) 
+        if len(self) < self.capacity: self.memory.append(None)
         # Overwrite current entry at this position.
         self.memory[self.position] = el # self.element(*el)
         # Increment position, cycling back to the beginning if needed.
@@ -51,11 +51,12 @@ class ReplayMemory:
         for el, r in zip(self.memory, rewards): el[4] = r.unsqueeze(0) # NOTE: reward must be at index 4 of the namedtuple spec.
         print("Done.")
 
-    def sample(self, batch_size, mode="uniform", keep_terminal_next=False):
+    def sample(self, batch_size, mode="uniform", range=None, keep_terminal_next=False):
         """Retrieve a random sample of transitions and refactor.
         See https://stackoverflow.com/a/19343/3343043."""
         if len(self) < batch_size: return None, None, None, None, None
         if mode == "relabel": batch = self._all()
+        elif mode == "latest": batch = self._latest(batch_size)
         elif mode == "uniform": batch = self._uniform(batch_size)
         elif mode == "prioritised": batch = self._prioritised(batch_size)
         states = torch.cat(batch.state)
@@ -73,8 +74,10 @@ class ReplayMemory:
 
     def _all(self): return self.element(*zip(*self.memory))
 
+    def _latest(self, batch_size): return self.element(*zip(*self.memory[-batch_size:]))
+
     def _uniform(self, batch_size): return self.element(*zip(*random.sample(self.memory, batch_size)))
-    
+
     def _prioritised(self, batch_size): raise NotImplementedError()
 
 

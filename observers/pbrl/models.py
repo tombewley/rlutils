@@ -6,6 +6,7 @@ import numpy as np
 from scipy.special import xlogy, xlog1py
 from scipy.stats import norm as norm_s
 from tqdm import tqdm
+from gym.spaces.space import Space
 
 
 norm = torch.distributions.Normal(0, 1)
@@ -22,7 +23,7 @@ class RewardNet:
         self.device = device
         self.P = P
         self.net = SequentialNetwork(device=self.device,
-            input_shape=len(feature_names),
+            input_space=[Space((len(feature_names),))],
             # Mean and log standard deviation
             output_size=2, 
             # 3x 256 hidden units used in PEBBLE paper
@@ -325,8 +326,9 @@ class RewardTree:
         return loss, pair_diff[0], pair_var[0]
         
     def features_to_indices(self, features):
-        return [self.tree.leaves.index(next(iter(
-                self.tree.propagate([None,None]+list(f), mode="max")))) for f in features.cpu().numpy()]
+        def get_index(f):
+            return self.tree.leaves.index(next(iter(self.tree.propagate([None,None]+list(f), mode="max"))))
+        return np.apply_along_axis(get_index, -1, features.cpu().numpy())
 
     def n(self, features):
         n = torch.zeros(self.m, device=self.device)

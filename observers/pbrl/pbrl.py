@@ -4,7 +4,6 @@ from .logger import Logger
 import os
 import torch
 from numpy import argwhere
-from joblib import load as load_jl, dump
 
 
 class PbrlObserver:
@@ -62,7 +61,7 @@ class PbrlObserver:
         Map an array of transitions to an array of features.
         """
         if self.features is None: return transitions
-        return torch.cat([self.features[f](transitions).reshape(-1,1) for f in self.feature_names], dim=1)
+        return torch.cat([self.features[f](transitions).unsqueeze(-1) for f in self.feature_names], dim=-1)
 
     def reward(self, states, actions, next_states, return_params=False):
         """
@@ -70,7 +69,7 @@ class PbrlObserver:
         """
         assert self.P["reward_source"] != "extrinsic", "This shouldn't have been called. Unwanted call to pbrl.link(agent)?"
         if "discrete_action_map" in self.P: actions = [self.P["discrete_action_map"][a] for a in actions] 
-        transitions = torch.cat([states, actions, next_states], dim=1)
+        transitions = torch.cat([states, actions, next_states], dim=-1)
         if self.P["reward_source"] == "oracle": # NOTE: Oracle defined over raw transitions rather than features
             assert not return_params, "Oracle doesn't use normal distribution parameters"
             return self.interface.oracle(transitions)
@@ -117,7 +116,7 @@ class PbrlObserver:
         # Assemble data structures needed for learning
         A, y, i_list, j_list, connected = self.construct_A_and_y()
         print(f"Connected episodes: {len(connected)} / {len(self.episodes)}")
-        if len(connected) == 0: print("=== None connected ==="); return
+        if len(connected) == 0: print("=== None connected ==="); return {}
         ep_lengths = [len(self.episodes[i]) for i in connected]
         # Apply feature mapping to all episodes that are connected to the preference graph
         features = self.feature_map(torch.cat([self.episodes[i] for i in connected]))
@@ -206,7 +205,7 @@ class PbrlObserver:
     def save(self, history_key):
         path = f"models/{self.run_names[-1]}"
         if not os.path.exists(path): os.makedirs(path)
-        dump({
+        torch.save({
               "episodes": self.episodes,
               "Pr": self.Pr,
               "model": self.model
@@ -216,7 +215,7 @@ def load(fname, P, features):
     """
     Make an instance of PbRLObserver from the information stored by the .save() method.
     """
-    dict = load_jl(fname)
+    dict = torch.load(fname, torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     pbrl = PbrlObserver(P, features=features, episodes=dict["episodes"])
     pbrl.Pr = dict["Pr"]
     if dict["model"] is not None:

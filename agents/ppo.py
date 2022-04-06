@@ -9,21 +9,21 @@ import torch.nn.functional as F
 
 
 class PpoAgent(Agent):
+    """
+    Proximal policy optimisation.
+    """
     def __init__(self, env, hyperparameters):
-        """
-        DESCRIPTION
-        """
         Agent.__init__(self, env, hyperparameters)
-        # Establish whether action space is continuous or discrete.
-        self.continuous_actions = len(self.env.action_space.shape) > 0
         # Create pi and V networks.
         if len(self.env.observation_space.shape) > 1: raise NotImplementedError() 
         self.action_dim = self.env.action_space.shape[0] if self.continuous_actions else self.env.action_space.n
         self.pi, self.pi_new = [SequentialNetwork(code=(self.P["net_pi_cont"] if self.continuous_actions else self.P["net_pi_disc"]), 
-            input_shape=self.env.observation_space.shape[0], output_size=self.action_dim, 
-            lr=self.P["lr_pi"], eval_only=eval_only, device=self.device) for eval_only in (True, False)]
+                                input_space=[self.env.observation_space], output_size=self.action_dim, 
+                                normaliser=self.P["input_normaliser"], lr=self.P["lr_pi"], eval_only=eval_only, device=self.device)
+                                for eval_only in (True, False)]
         self.pi_new.load_state_dict(self.pi.state_dict()) # Require a copy of pi to perform clipping.
-        self.V = SequentialNetwork(code=self.P["net_V"], input_shape=self.env.observation_space.shape[0], output_size=1, lr=self.P["lr_V"], device=self.device)
+        self.V = SequentialNetwork(code=self.P["net_V"], input_space=[self.env.observation_space], output_size=1, 
+                                   normaliser=self.P["input_normaliser"], lr=self.P["lr_V"], device=self.device)
         # Create replay memory. Note that PPO is on-policy so this is cleared after each update.
         self.memory = PpoMemory()
         if self.continuous_actions:
@@ -54,6 +54,8 @@ class PpoAgent(Agent):
             if self.continuous_actions: action = torch.clamp(action, -1, 1)
             self.last_action = action
             self.last_log_prob = dist.log_prob(action)
+            # NOTE: Apply action scaling here, meaning self.last_action stays in [-1,1].
+            if self.continuous_actions: action = self._action_scale(action)
             return action.cpu().numpy()[0] if self.continuous_actions else action.item(), extra
 
     def update_on_experience(self):
@@ -66,7 +68,7 @@ class PpoAgent(Agent):
             returns.insert(0, g)
         # Apply baselining.
         returns = self.baseline(torch.tensor(returns, dtype=torch.float32).to(self.device), None)
-        # Get states, actions and log probs in Torch tensors.
+        # Get states, actions (NOTE: in [-1,1]) and log probs in Torch tensors.
         states = torch.squeeze(torch.stack(self.memory.state, dim=0)).detach().to(self.device)
         actions = torch.squeeze(torch.stack(self.memory.action, dim=0)).detach().to(self.device)
         log_probs = torch.squeeze(torch.stack(self.memory.log_prob, dim=0)).detach().to(self.device)
@@ -81,12 +83,12 @@ class PpoAgent(Agent):
             surr1 = ratios * advantages
             surr2 = torch.clamp(ratios, 1-self.P["epsilon"], 1+self.P["epsilon"]) * advantages
             
-            # Update value using MSE loss.
+            # Update value using MSE loss. TODO: Huber?
             value_loss = F.mse_loss(values, returns)
             self.V.optimise(value_loss) 
 
-            # Update 
-            raise NotImplementedError("Is this implemented?")
+            # Update. 
+            raise NotImplementedError("Is this working?")
             policy_loss = (-torch.min(surr1, surr2) - 0.01*dist_entropy).mean()
             self.pi_new.optimise(policy_loss) 
 
@@ -111,11 +113,11 @@ class PpoAgent(Agent):
         self.memory.log_prob.append(self.last_log_prob)
         self.memory.reward.append(reward)
         self.memory.done.append(done)
+        self.total_t += 1
         if self.continuous_actions and self.total_t % self.P["noise_params"][4] == 0: 
             # Decay action standard deviation linearly. 
             self.action_std = max(self.action_std - self.P["noise_params"][3], self.P["noise_params"][2])
             self.noise = torch.full((self.action_dim,), self.action_std**2).to(self.device)
-        self.total_t += 1
 
     def per_episode(self):
         """Operations to perform on each episode end during training."""

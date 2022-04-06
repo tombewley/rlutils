@@ -15,7 +15,7 @@ def squashed_gaussian(pi):
     action = torch.tanh(action_unsquashed)
     # Compute log_prob from Gaussian, then apply correction for tanh squashing.
     log_prob = gaussian.log_prob(action_unsquashed).sum(axis=-1)
-    log_prob -= (2 * (np.log(2) - action_unsquashed - F.softplus(-2 * action_unsquashed))).sum(axis=1)
+    log_prob -= (2 * (np.log(2) - action_unsquashed - F.softplus(-2 * action_unsquashed))).sum(axis=-1)
     return action, log_prob
 
 
@@ -41,9 +41,8 @@ class EpsilonGreedy:
         self.epsilon = max(self.epsilon - self.decay_increment, self.epsilon_end) # Decay linearly as per DQN Nature paper.
 
 
-# TODO: Work natively with Torch tensors rather than NumPy arrays.
 class OUNoise:
-    def __init__(self, action_space, mu, theta, sigma_start, sigma_end, decay_period):
+    def __init__(self, action_space, mu, theta, sigma_start, sigma_end, decay_period, device):
         """
         Time-correlated noise for continuous spaces using the Ornstein-Ulhenbeck process.
         Taken from https://github.com/vitchyr/rlkit/blob/master/rlkit/exploration_strategies/ou_strategy.py
@@ -55,20 +54,21 @@ class OUNoise:
         self.sigma_end    = sigma_end
         self.decay_period = decay_period
         self.action_dim   = action_space.shape[0]
-        self.low          = -1 # action_space.low # NOTE: Just use [-1,1] if applying NormaliseActionWrapper to env.
+        self.low          = -1 # action_space.low # NOTE: Just use [-1,1] as apply agent._action_scale later
         self.high         = 1 # action_space.high
+        self.device       = device
         self.reset()
         
     def __call__(self, action):
         self.evolve_state()
-        return np.clip(action + self.state, self.low, self.high)
+        return torch.clamp(action + self.state, self.low, self.high)
     
     def reset(self):
-        self.state = np.ones(self.action_dim) * self.mu
+        self.state = torch.ones(self.action_dim, device=self.device) * self.mu
         
     def evolve_state(self):
         x  = self.state
-        dx = self.theta * (self.mu - x) + self.sigma * np.random.randn(self.action_dim)
+        dx = self.theta * (self.mu - x) + self.sigma * torch.randn(self.action_dim, device=self.device)
         self.state = x + dx
 
     def decay(self, k):
@@ -76,7 +76,7 @@ class OUNoise:
 
 
 class UniformNoise:
-    def __init__(self, action_space, sigma_start, sigma_end, decay_period):
+    def __init__(self, action_space, sigma_start, sigma_end, decay_period, device):
         """
         Weighted averaging with random uniform noise. Use sigma as parameter for consistency with above.
         """
@@ -85,9 +85,10 @@ class UniformNoise:
         self.sigma_start  = sigma_start
         self.sigma_end    = sigma_end
         self.decay_period = decay_period
+        self.device       = device
 
     def __call__(self, action):
-        action_rand = self.action_space.sample()
+        action_rand = torch.tensor(self.action_space.sample(), device=self.device).unsqueeze(0)
         return (action * (1-self.sigma)) + (action_rand * self.sigma)    
 
     def decay(self, k):

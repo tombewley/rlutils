@@ -7,6 +7,7 @@ class NormaliseActionWrapper(gym.ActionWrapper):
     Maps normalised actions in [-1,1] into the range used by the environment.
     """
     def __init__(self, env):
+        raise NotImplementedError("Don't use this; agents should output correctly-scaled actions!")
         super().__init__(env)
         self.act_k = (self.action_space.high - self.action_space.low) / 2.
         self.act_k_inv = 2./(self.action_space.high - self.action_space.low)

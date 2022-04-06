@@ -8,62 +8,61 @@ import torch.nn.functional as F
 
 
 class ReinforceAgent(Agent):
+    """
+    REINFORCE / vanilla policy gradient for discrete action spaces.
+    """
     def __init__(self, env, hyperparameters):
-        """
-        DESCRIPTION
-        """
         Agent.__init__(self, env, hyperparameters)
+        self.eps = np.finfo(np.float32).eps.item() # Small float used to prevent div/0 errors.
         # Create pi network (and V if using advantage baselining).
-        if len(self.env.observation_space.shape) > 1: raise NotImplementedError()
-        self.pi = SequentialNetwork(code=self.P["net_pi"], input_shape=self.env.observation_space.shape[0], output_size=self.env.action_space.n, lr=self.P["lr_pi"], device=self.device)
+        self.pi = SequentialNetwork(code=self.P["net_pi"], input_space=[self.env.observation_space], output_size=self.env.action_space.n,
+                                    normaliser=self.P["input_normaliser"], lr=self.P["lr_pi"], device=self.device)
         if self.P["baseline"] == "adv":
-            self.V = SequentialNetwork(code=self.P["net_V"], input_shape=self.env.observation_space.shape[0], output_size=1, lr=self.P["lr_V"], device=self.device)
+            self.V = SequentialNetwork(code=self.P["net_V"], input_space=[self.env.observation_space], output_size=1,
+                                       normaliser=self.P["input_normaliser"], lr=self.P["lr_V"], device=self.device)
+            self.ep_values = []
         else: self.V = None
-        # Small float used to prevent div/0 errors.
-        self.eps = np.finfo(np.float32).eps.item() 
         # Tracking variables.
-        self.ep_predictions = [] # Log prob actions (and value).
         self.ep_rewards = []
+        self.ep_log_probs = []
 
     def act(self, state, explore=True, do_extra=False):
-        """Probabilistic action selection."""
-        with torch.no_grad():
-            if self.V is not None: action_probs, value = self.pi(state), self.V(state)
-            else: action_probs = self.pi(state)
-            dist = Categorical(action_probs) # Categorical action distribution.
-            action = dist.sample()
-            extra = {"pi": action_probs.cpu().detach().numpy()} if do_extra else {}
-            if self.V is not None: 
-                self.ep_predictions.append((dist.log_prob(action), value[0]))
-                if do_extra: extra["V"] = value[0].item()
-            else: 
-                self.ep_predictions.append(dist.log_prob(action))
-            return action.item(), extra
+        """Probabilistic action selection *without* torch.no_grad() to allow backprop later."""
+        action_probs = self.pi(state)
+        dist = Categorical(action_probs)
+        action = dist.sample()
+        self.ep_log_probs.append(dist.log_prob(action).squeeze())
+        extra = {"pi": action_probs.squeeze().cpu().detach().numpy()} if do_extra else {}
+        if self.V is not None:
+            value = self.V(state).squeeze()
+            self.ep_values.append(value)
+            if do_extra: extra["V"] = value.item()
+        return action.item(), extra
 
     def update_on_episode(self):
         """Use the latest episode of experience to update the policy (and value) network parameters."""
-        assert len(self.ep_predictions) == len(self.ep_rewards), \
-        "Need to store rewards using agent.rewards.append(reward) on each timestep."     
-        # Loop backwards through the episode to compute Monte Carlo returns.   
+        assert len(self.ep_rewards) == len(self.ep_log_probs)
+        # Loop backwards through the episode to compute Monte Carlo returns.
         g, returns = 0, []
-        for reward in self.ep_rewards[::-1]: 
+        for reward in self.ep_rewards[::-1]:
             g = reward + (self.P["gamma"] * g)
             returns.insert(0, g)
         returns = torch.tensor(returns, device=self.device)
+        log_probs = torch.stack(self.ep_log_probs)
         if self.V is not None: 
             # Update value in the direction of advantage using Huber loss.
-            log_probs, values = (torch.cat(x) for x in zip(*self.ep_predictions))
+            values = torch.stack(self.ep_values)
             value_loss = F.smooth_l1_loss(values, returns)
             self.V.optimise(value_loss)
-        else: log_probs, values, value_loss = torch.cat(self.ep_predictions), None, torch.tensor(0.)
+        else: values, value_loss = None, None
         # Update policy in the direction of log_prob(a) * delta.
-        policy_loss = (-log_probs * self.baseline(returns, values)).sum()
+        policy_loss = (-log_probs * self.baseline(returns, values)).mean()
         self.pi.optimise(policy_loss)
         return policy_loss.item(), value_loss.item()
 
     def baseline(self, returns, values):
         """Apply baselining to returns to improve update stability."""
-        if self.P["baseline"] == "off":  return returns # No baselining.
+        if   self.P["baseline"] == "off": return returns # No baselining.
         elif self.P["baseline"] == "Z":   return (returns - returns.mean()) / (returns.std() + self.eps) # Z-normalisation.
         elif self.P["baseline"] == "adv": return (returns - values).detach() # Advantage (subtract value prediction).
         else: raise NotImplementedError("Baseline method not recognised.")
@@ -75,5 +74,6 @@ class ReinforceAgent(Agent):
     def per_episode(self):
         """Operations to perform on each episode end during training."""
         policy_loss, value_loss = self.update_on_episode() 
-        del self.ep_predictions[:]; del self.ep_rewards[:] 
+        del self.ep_rewards[:]; del self.ep_log_probs[:]
+        if self.V is not None: del self.ep_values[:]
         return {"policy_loss": policy_loss, "value_loss": value_loss}
