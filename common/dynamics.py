@@ -26,8 +26,8 @@ class DynamicsModel:
         self.P = rollout_params
         assert type(action_space) == Box, "CEM doesn't work with discrete actions, and need one-hot encoding for model"
         self.nets = [SequentialNetwork(code=code, input_space=[observation_space, action_space],
-                                     output_size=observation_space.shape[0]*(2 if self.probabilistic else 1),
-                                     normaliser="box_bounds", lr=lr, device=device) # NOTE: Using box_bounds normalisation.
+                                       output_size=observation_space.shape[0]*(2 if self.probabilistic else 1),
+                                       normaliser="box_bounds", lr=lr, device=device) # NOTE: Using box_bounds normalisation.
                      for _ in range(ensemble_size)]
         self.horizon = self.P["horizon_params"][1] # Initial planning horizon (NOTE: indexing assumption).
         self.action_dim = action_space.shape[0]
