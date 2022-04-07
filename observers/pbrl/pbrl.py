@@ -1,3 +1,5 @@
+from .featuriser import Featuriser
+from .interfaces import Interface
 from .sampler import Sampler
 from .logger import Logger
 
@@ -10,17 +12,17 @@ class PbrlObserver:
     """
     xxx
     """
-    def __init__(self, P, features, run_names=None, episodes=None):
+    def __init__(self, P, run_names=None, episodes=None):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.P = P 
-        if type(features) == dict: self.feature_names, self.features = list(features.keys()), features
-        elif type(features) == list: self.feature_names, self.features = features, None
+        self.P = P
         self.run_names = run_names if run_names is not None else [] # NOTE: Order crucial to match with episodes
         self.load_episodes(episodes if episodes is not None else [])
-        # Reward model, trajectory pair sampler, preference collection interface and logger are all modular
-        self.model = self.P["model"]["kind"](self.device, self.feature_names, self.P["model"]) if "model" in self.P else None
+        # Featuriser, reward model, trajectory pair sampler, preference collection interface and logger are all modular
+        self.featuriser = Featuriser(self.P["featuriser"] if "featuriser" in self.P else {})
+        self.model = self.P["model"]["class"](self.device, self.featuriser.names, self.P["model"]) if "model" in self.P else None
         self.sampler = Sampler(self, self.P["sampler"]) if "sampler" in self.P else None
-        self.interface = self.P["interface"]["kind"](self, **self.P["interface"]) if "interface" in self.P else None
+        assert issubclass(self.P["interface"]["class"], Interface)
+        self.interface = self.P["interface"]["class"](self, self.P["interface"]) if "interface" in self.P else None
         self.logger = Logger(self, self.P["logger"]) if "logger" in self.P else None
         self._k = 0 # Preference counter
         self._observing = "observe_freq" in self.P and self.P["observe_freq"] > 0
@@ -56,13 +58,6 @@ class PbrlObserver:
 # ==============================================================================
 # PREDICTION METHODS
 
-    def feature_map(self, transitions):
-        """
-        Map an array of transitions to an array of features.
-        """
-        if self.features is None: return transitions
-        return torch.cat([self.features[f](transitions).unsqueeze(-1) for f in self.feature_names], dim=-1)
-
     def reward(self, states, actions, next_states, return_params=False):
         """
         Reward function, defined over individual transitions (s,a,s').
@@ -74,12 +69,12 @@ class PbrlObserver:
             assert not return_params, "Oracle doesn't use normal distribution parameters"
             return self.interface.oracle(transitions)
         else:
-            mu, _, std = self.model(self.feature_map(transitions))        
+            mu, _, std = self.model(self.featuriser(transitions))
         if "rune_coef" in self.P: return mu + self.P["rune_coef"] * std
         else: return mu
 
     def fitness(self, trajectory):
-        return self.model.fitness(self.feature_map(trajectory))
+        return self.model.fitness(self.featuriser(trajectory))
 
 # ==============================================================================
 # METHODS FOR EXECUTING THE LEARNING PROCESS
@@ -119,7 +114,7 @@ class PbrlObserver:
         if len(connected) == 0: print("=== None connected ==="); return {}
         ep_lengths = [len(self.episodes[i]) for i in connected]
         # Apply feature mapping to all episodes that are connected to the preference graph
-        features = self.feature_map(torch.cat([self.episodes[i] for i in connected]))
+        features = self.featuriser(torch.cat([self.episodes[i] for i in connected]))
         # Update the reward function using connected episodes
         logs = self.model.update(history_key, features, ep_lengths, A, i_list, j_list, y)
         # If applicable, relabel the agent's replay memory using the updated reward function
@@ -207,16 +202,16 @@ class PbrlObserver:
         if not os.path.exists(path): os.makedirs(path)
         torch.save({
               "episodes": self.episodes,
-              "Pr": self.Pr,
-              "model": self.model
+              "Pr":       self.Pr,
+              "model":    self.model
         }, f"{path}/{history_key}.pbrl")
 
-def load(fname, P, features):
+def load(fname, P):
     """
     Make an instance of PbRLObserver from the information stored by the .save() method.
     """
     dict = torch.load(fname, torch.device("cuda" if torch.cuda.is_available() else "cpu"))
-    pbrl = PbrlObserver(P, features=features, episodes=dict["episodes"])
+    pbrl = PbrlObserver(P, episodes=dict["episodes"])
     pbrl.Pr = dict["Pr"]
     if dict["model"] is not None:
         assert pbrl.model is None, "New/existing model conflict."

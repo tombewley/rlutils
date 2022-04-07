@@ -92,7 +92,7 @@ class RewardTree:
         # ===================
         self.device = device
         self.P = P
-        space = hr.Space(dim_names=["ep", "reward"] + feature_names)
+        space = hr.Space(dim_names=feature_names+["ep", "reward"])
         root = hr.node.Node(space, sorted_indices=space.all_sorted_indices) 
         self.tree = hr.tree.Tree(
             name="reward_function", 
@@ -108,7 +108,16 @@ class RewardTree:
     def m(self): return len(self.tree.leaves)
 
     def __call__(self, features):
-        indices = self.features_to_indices(features)
+        indices = self.tree.get_leaf_nums(features.cpu().numpy())
+
+        # =========
+        # indices_old = self.features_to_indices(features)
+        # noteq = indices != indices_old
+        # if noteq.any():
+        #     print(features[noteq])
+        #     raise Exception()
+        # =========
+
         mu, var = self.r[indices], self.var[indices]
         std = torch.sqrt(var)     
         return mu, var, std
@@ -133,8 +142,8 @@ class RewardTree:
         # Populate tree. 
         self.tree.space.data = np.hstack((
             # NOTE: Using index in connected list rather than pbrl.episodes
+            features.cpu().numpy(),
             np.vstack([[[i, r]] * l for i, (r, l) in enumerate(zip(reward_target, ep_lengths))]),
-            features.cpu().numpy()                             
             ))
         if reset_tree: self.tree.prune_to(self.tree.root) 
         # NOTE: If we don't reiterate this on each update we get a weird bug of old self._attributes being referenced
@@ -157,7 +166,7 @@ class RewardTree:
                 if node is not None:
                     # Store counts in left and right children
                     node.left.counts = np.zeros_like(node.counts)
-                    e, c = np.unique(np.rint(node.left.data(0)).astype(int), return_counts=True)
+                    e, c = np.unique(np.rint(node.left.data(-2)).astype(int), return_counts=True) # NOTE: Assumes ep num is dim -2
                     node.left.counts[e] = c
                     node.right.counts = node.counts - node.left.counts
                     node.left.proxy_qual, node.right.proxy_qual = {}, {}
@@ -187,8 +196,8 @@ class RewardTree:
                 for i in range(self.m - 1):
                     left, right = self.tree.leaves[i:i+2]
                     if left.parent is right.parent:
-                        m = np.delete(mean,   i, axis=0); m[i] = left.parent.mean[1] # NOTE: Assumes reward is dim 1
-                        v = np.delete(var,    i, axis=0); v[i] = left.parent.cov[1,1]
+                        m = np.delete(mean,   i, axis=0); m[i] = left.parent.mean[-1] # NOTE: Assumes reward is dim -1
+                        v = np.delete(var,    i, axis=0); v[i] = left.parent.cov[-1,-1]
                         c = np.delete(counts, i, axis=0); c[i] = left.parent.counts
                         loss, _, _ = self.preference_loss(m, v, c)
                         prune_candidates.append((i, m, v, c, loss))
@@ -199,7 +208,7 @@ class RewardTree:
                     loss[0],                                                   # Preference loss
                     sum(self.tree.gather(("var_sum", "reward"))) / num_samples # Proxy loss: variance
                     ])
-                pbar.update(1)
+                pbar.update()
         # Restore the subtree in the pruning sequence with minimum size-regularised loss
         self.tree = tree_before_prune
         # NOTE: Using reversed list to ensure *last* occurrence returned
@@ -219,11 +228,11 @@ class RewardTree:
         """
         Evaluate the quality of all valid splits of node along split_dim.
         """
-        # Gather attributes from the node (NOTE: ep nums/rewards must be dims 0/1)
-        ep_nums, rewards = np.moveaxis(node.space.data[node.sorted_indices[:,split_dims][:,:,None],[0,1]], 2, 0)
+        # Gather attributes from the node (NOTE: Assumes ep nums/rewards are dims -2/-1)
+        ep_nums, rewards = np.moveaxis(node.space.data[node.sorted_indices[:,split_dims][:,:,None],[-2,-1]], 2, 0)
         ep_nums = np.rint(ep_nums).astype(int)
-        parent_mean = node.mean[1]
-        parent_var_sum = node.var_sum[1]
+        parent_mean = node.mean[-1]
+        parent_var_sum = node.var_sum[-1]
         parent_num_samples = node.num_samples
         parent_counts = node.counts
         split_data = node.space.data[node.sorted_indices[:,split_dims],split_dims]
@@ -327,12 +336,13 @@ class RewardTree:
         
     def features_to_indices(self, features):
         def get_index(f):
-            return self.tree.leaves.index(next(iter(self.tree.propagate([None,None]+list(f), mode="max"))))
+            return self.tree.leaves.index(next(iter(self.tree.propagate(list(f)+[None,None], mode="max"))))
         return np.apply_along_axis(get_index, -1, features.cpu().numpy())
 
     def n(self, features):
+        assert len(features.shape) == 2
         n = torch.zeros(self.m, device=self.device)
-        for x in self.features_to_indices(features): n[x] += 1
+        for x in self.tree.get_leaf_nums(features.cpu().numpy()): n[x] += 1
         return n
 
     def compute_r_and_var(self):

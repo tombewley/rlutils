@@ -1,16 +1,22 @@
-import numpy as np
+from numpy.random import default_rng
 from scipy.stats import norm
 
 
 class Interface:
-    def __init__(self, pbrl): self.pbrl, self.oracle = pbrl, None
+    def __init__(self, pbrl):
+        self.pbrl, self.oracle = pbrl, None
+        self.seed()
+
+    def seed(self, seed=None):
+        self.rng = default_rng(seed)
+
     def __enter__(self): pass
     def __exit__(self, exc_type, exc_value, traceback): pass
     def print(self, _): pass
 
 
 class VideoInterface(Interface):
-    def __init__(self, pbrl): 
+    def __init__(self, pbrl, P):
         Interface.__init__(self, pbrl)
         import cv2 # Lazy import
         self.mapping = {81: 1., 83: 0., 32: 0.5, 27: "esc"}
@@ -72,28 +78,32 @@ class OracleInterface(Interface):
     TODO:
     (7) Left-right bias *NEED TO RANDOMISE ORDER OF i,j AFTER SAMPLING FOR THIS TO WORK*
     """
-    def __init__(self, pbrl, kind=None, oracle=None, gamma=1, sigma=0, d_skip=-np.inf, p_equal=0, epsilon=0, return_P_i=False): 
-        Interface.__init__(self, pbrl)
-        self.oracle = oracle
-        self.gamma, self.sigma, self.d_skip, self.p_equal, self.epsilon, self.return_P_i = gamma, sigma, d_skip, p_equal, epsilon, return_P_i
 
-    def __call__(self, i, j): 
+    # Defaults
+    P = {"gamma": 1, "sigma": 0, "d_skip": -float("inf"), "p_equal": 0, "epsilon": 0, "return_P_i": False}
+
+    def __init__(self, pbrl, P):
+        Interface.__init__(self, pbrl)
+        self.oracle = P["oracle"]
+        self.P.update(P)
+
+    def __call__(self, i, j):
         if type(self.oracle) == list:
             raise NotImplementedError("List-based oracle is deprecated")
             ret_i, ret_j = self.oracle[i], self.oracle[j]
         else:
             ret_i = self.myopic_sum(self.oracle(self.pbrl.episodes[i]))
             ret_j = self.myopic_sum(self.oracle(self.pbrl.episodes[j]))
-        if max(ret_i, ret_j) < self.d_skip:  return "skip"
+        if max(ret_i, ret_j) < self.P["d_skip"]:  return "skip"
         diff = ret_i - ret_j
-        if self.sigma == 0: P_i = 0.5 if diff == 0 else 1. if diff > 0 else 0.
-        else:               P_i = norm.cdf(diff / self.sigma)
-        if np.random.rand() <= self.epsilon: P_i = 1. - P_i
-        if self.return_P_i:                  return P_i
-        elif abs(P_i - 0.5) <= self.p_equal: return 0.5
-        elif np.random.rand() < P_i:         return 1. 
-        else:                                return 0. 
+        if self.P["sigma"] == 0: P_i = 0.5 if diff == 0 else 1. if diff > 0 else 0.
+        else:                    P_i = norm.cdf(diff / self.P["sigma"])
+        if self.rng.random() <= self.P["epsilon"]: P_i = 1. - P_i
+        if self.P["return_P_i"]:                   return P_i
+        elif abs(P_i - 0.5) <= self.P["p_equal"]:  return 0.5
+        elif self.rng.random() < P_i:              return 1.
+        else:                                      return 0.
 
     def myopic_sum(self, rewards):
-        if self.gamma == 1: return sum(rewards)
-        return sum([r*(self.gamma**t) for t,r in enumerate(reversed(rewards))])
+        if self.P["gamma"] == 1: return sum(rewards)
+        return sum([r*(self.P["gamma"]**t) for t,r in enumerate(reversed(rewards))])
