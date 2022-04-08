@@ -18,7 +18,7 @@ class PbrlObserver:
         self.run_names = run_names if run_names is not None else [] # NOTE: Order crucial to match with episodes
         self.load_episodes(episodes if episodes is not None else [])
         # Featuriser, reward model, trajectory pair sampler, preference collection interface and logger are all modular
-        self.featuriser = Featuriser(self.P["featuriser"] if "featuriser" in self.P else {})
+        self.featuriser = Featuriser(self.P["featuriser"]) if "featuriser" in self.P else {}
         self.model = self.P["model"]["class"](self.device, self.featuriser.names, self.P["model"]) if "model" in self.P else None
         self.sampler = Sampler(self, self.P["sampler"]) if "sampler" in self.P else None
         assert issubclass(self.P["interface"]["class"], Interface)

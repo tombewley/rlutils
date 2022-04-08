@@ -20,15 +20,20 @@ class DynamicsModel:
     """
     Optionally implements probabilistic dynamics using the reparameterisation trick.
     """
-    def __init__(self, code, observation_space, action_space, reward_function, lr, ensemble_size, rollout_params, device, probabilistic=False):
+    def __init__(self, observation_space, action_space, reward_function, lr, rollout_params, device, nets=None, code=None, ensemble_size=None, probabilistic=False):
         self.reward_function = reward_function
         self.probabilistic = probabilistic
         self.P = rollout_params
         assert type(action_space) == Box, "CEM doesn't work with discrete actions, and need one-hot encoding for model"
-        self.nets = [SequentialNetwork(code=code, input_space=[observation_space, action_space],
-                                       output_size=observation_space.shape[0]*(2 if self.probabilistic else 1),
-                                       normaliser="box_bounds", lr=lr, device=device) # NOTE: Using box_bounds normalisation.
-                     for _ in range(ensemble_size)]
+        if nets is not None: # Load pretrained ensemble of nets.
+            for net in nets:
+                for g in net.optimiser.param_groups: g["lr"] = lr
+            self.nets = nets
+        else: # Create new ensemble of nets.
+            self.nets = [SequentialNetwork(code=code, input_space=[observation_space, action_space],
+                                        output_size=observation_space.shape[0]*(2 if self.probabilistic else 1),
+                                        normaliser="box_bounds", lr=lr, device=device) # NOTE: Using box_bounds normalisation.
+                        for _ in range(ensemble_size)]
         self.horizon = self.P["horizon_params"][1] # Initial planning horizon (NOTE: indexing assumption).
         self.action_dim = action_space.shape[0]
         # Weight model loss function by bounds of observation space.

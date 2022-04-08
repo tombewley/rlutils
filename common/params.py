@@ -27,7 +27,7 @@ def recursive_update(d1, d2, i=None, block_overwrite=False, verbose=False):
     if i is not None: _select_index(d1)
 
 
-def build_params(paths, params=None, root_dir=""):
+def build_params(paths, params=None, root_dir="", verbose=False):
     if params is None: params = {}
     paths = [p.replace("/",".") for p in paths]
     root_dir = root_dir.replace("/", ".")
@@ -41,5 +41,5 @@ def build_params(paths, params=None, root_dir=""):
         except ImportError: # If not a recognised config file, treat as filename for loading
             new = {"deployment": {"agent_load_fname": p}} 
         recursive_update(update, new, i=i, block_overwrite=True, verbose=False)
-    recursive_update(params, update, verbose=True)
+    recursive_update(params, update, verbose=verbose)
     return params

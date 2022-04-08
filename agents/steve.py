@@ -25,8 +25,8 @@ class SteveAgent(DdpgAgent):
         # Create dynamics model.
         self.P["rollout"]["num_particles"] = self.P["ensemble_size"]
         self.model = DynamicsModel(code=self.P["net_model"], observation_space=self.env.observation_space, action_space=self.env.action_space,
-                                     reward_function=self.P["reward"], ensemble_size=self.P["ensemble_size"], rollout_params=self.P["rollout"],
-                                     lr=self.P["lr_model"], device=self.device)
+                                   reward_function=self.P["reward"], ensemble_size=self.P["ensemble_size"], rollout_params=self.P["rollout"],
+                                   lr=self.P["lr_model"], device=self.device)
         # Small float used to prevent div/0 errors.
         self.eps = np.finfo(np.float32).eps.item()
         # Tracking variables.
