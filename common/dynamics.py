@@ -69,6 +69,7 @@ class DynamicsModel:
     def rollout(self, states_init, ensemble_index, policy=None, actions=None):
         """
         Starting at states_init, rollout either a callable policy or predefined action sequences.
+        NOTE: PETS paper seems to use multiple particles per action sequence.
         """
         batch_size = states_init.shape[0]
         if actions is not None:

@@ -5,8 +5,14 @@ import importlib
 
 
 def recursive_update(d1, d2, i=None, block_overwrite=False, verbose=False):
-    # Adapted from https://stackoverflow.com/a/38504949.
+    def _select_index(d):
+        for k in d:
+            if isinstance(d[k], dict):
+                try: d[k] = d[k][i]
+                except: _select_index(d[k])
+            elif isinstance(d[k], list): d[k] = d[k][int(i)]
     def _update(d1, d2, path=[]):
+        # Adapted from https://stackoverflow.com/a/38504949.
         for k in d2:
             typ = None
             if k in d1:
@@ -14,18 +20,11 @@ def recursive_update(d1, d2, i=None, block_overwrite=False, verbose=False):
                 elif block_overwrite: raise Exception(f"{'.'.join(path+[k])}: {d1[k]} | {d2[k]}")
                 else: typ = "UP "
             else: typ = "NEW"
-            if typ is not None: 
+            if typ is not None:
                 d1[k] = d2[k]
                 if verbose: print(f"{typ} {'.'.join(path+[k])}: {d1[k]}")
-    def _select_index(d1):
-        for k in d1: 
-            if isinstance(d1[k], dict): 
-                try: d1[k] = d1[k][i]
-                except: _select_index(d1[k])
-            elif isinstance(d1[k], list): d1[k] = d1[k][int(i)]
+    if i is not None: _select_index(d2)
     _update(d1, d2)
-    if i is not None: _select_index(d1)
-
 
 def build_params(paths, params=None, root_dir="", verbose=False):
     if params is None: params = {}
