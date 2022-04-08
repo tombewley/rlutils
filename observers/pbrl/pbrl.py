@@ -174,16 +174,17 @@ class PbrlObserver:
         if self._online:
             if (ep+1) % self.P["feedback_freq"] == 0 and (ep+1) <= self.P["num_episodes_before_freeze"]:    
                 # Calculate batch size.
-                # K = self.P["feedback_budget"]
-                # B = self._num_batches 
-                # f = self.P["feedback_freq"] / self.P["observe_freq"] # Number of episodes between batches
-                # c = self.P["scheduling_coef"]
-                # b = self._batch_num # Current batch number.
-                # batch_size = int(round((K / B * (1 - c)) + (K * (f * (2*(b+1) - 1) - 1) / (B * (B*f - 1)) * c)))
-                assert self.P["scheduling_coef"] == 0
-                K = self.P["feedback_budget"] - len(self.graph.edges) # Remaining budget
-                B = self._num_batches - self._batch_num # Remaining number of batches
-                batch_size = int(round(K / B))
+                if self.P["scheduling_coef"] > 0: # TODO: Make adaptive to remaining budget
+                    K = self.P["feedback_budget"]
+                    B = self._num_batches
+                    f = self.P["feedback_freq"] / self.P["observe_freq"] # Number of episodes between batches
+                    c = self.P["scheduling_coef"]
+                    b = self._batch_num # Current batch number.
+                    batch_size = int(round((K / B * (1 - c)) + (K * (f * (2*(b+1) - 1) - 1) / (B * (B*f - 1)) * c)))
+                else:
+                    K = self.P["feedback_budget"] - len(self.graph.edges) # Remaining budget
+                    B = self._num_batches - self._batch_num # Remaining number of batches
+                    batch_size = int(round(K / B))
                 # Gather preferences and update reward function
                 self.preference_batch(history_key=(ep+1), batch_size=batch_size, ij_min=self._n_on_prev_batch)
                 self._batch_num += 1 
