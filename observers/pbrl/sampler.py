@@ -1,5 +1,5 @@
 import torch
-from numpy import unravel_index, argwhere
+from numpy import unravel_index
 from numpy.random import default_rng
 
 
@@ -39,7 +39,7 @@ class Sampler:
         """
         if self._k >= self.batch_size: return 1, None, None, None # Batch completed
         n = len(self.pbrl.graph); assert self.w.shape == (n, n)
-        not_rated = torch.isnan(self.pbrl.preference_matrix)
+        not_rated = torch.isnan(self.pbrl.preference_matrix) # TODO: Can bypass this and compute directly from graph
         if not_rated.sum() <= n: return 2, None, None, None # Fully connected
         p = self.w.clone()
         # Enforce non-identity constraint...
@@ -48,9 +48,9 @@ class Sampler:
         rated = ~not_rated
         p[rated] = float("nan")
         if self.P["constrained"]:
-            # ...enforce connectedness constraint...    
-            unconnected = argwhere(rated.sum(axis=1) == 0).flatten()
-            if len(unconnected) < n: p[unconnected] = float("nan") # (ignore connectedness if first ever rating)
+            # ...enforce connectedness constraint...
+            unconnected = rated.sum(axis=1) == 0
+            if sum(unconnected) < n: p[unconnected] = float("nan") # (ignore connectedness if first ever rating)
             # ...enforce recency constraint...
             p[:self.ij_min, :self.ij_min] = float("nan")
         nans = torch.isnan(p)
@@ -64,12 +64,13 @@ class Sampler:
                    weights=p.ravel(), num_samples=1, generator=self.pt_rng))[0], p.shape)
         else: 
             # ...and pick at random from the set of argmax pairs
+            raise NotImplementedError("Avoid use of argwhere")
             argmaxes = argwhere(p == torch.max(p[~nans])).T
             i, j = argmaxes[self.np_rng.choice(len(argmaxes))]; i, j = i.item(), j.item()
         # Check that all constraints are satisfied
         assert i != j and not_rated[i, j]
         if self.P["constrained"]:
-            if len(unconnected) < n: assert rated[i].sum() > 0 
+            if sum(unconnected) < n: assert rated[i].sum() > 0
             assert i >= self.ij_min or j >= self.ij_min
         self._k += 1
         return 0, i, j, p
