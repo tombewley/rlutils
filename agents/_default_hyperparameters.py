@@ -94,6 +94,7 @@ default_hyperparameters = {
     "rollout": {
       "horizon_params": ("constant", 20),
     },
+    "cem_review": False, # For debugging: visualise initial/final first-action distributions on each timestep.
     "rollout_review": False # For debugging: visualise rollouts of each episode's action sequence.
   },
 

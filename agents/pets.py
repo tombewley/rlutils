@@ -5,6 +5,8 @@ from ..common.utils import truncated_normal
 
 import torch
 from numpy import mean
+import matplotlib.pyplot as plt
+from mpl_toolkits import mplot3d
 
 
 class PetsAgent(Agent):
@@ -42,7 +44,7 @@ class PetsAgent(Agent):
         """Either random or model-based action selection."""
         with torch.no_grad():
             extra = {}
-            if self.random_mode: 
+            if explore and self.random_mode:
                 action = self.env.action_space.sample()
                 if do_extra: 
                     action_torch = torch.tensor(action, device=self.device).unsqueeze(0)
@@ -70,6 +72,16 @@ class PetsAgent(Agent):
                     states, _, rewards = self.model.rollout(state, actions=actions[i], ensemble_index="ts1_a")
                     returns[i] = (gamma_range * rewards).sum(axis=1).squeeze()
                     elites = returns[i].topk(self.P["cem_elites"]).indices
+
+                if self.P["cem_review"]:
+                    first_actions = actions[:,:,0].squeeze()
+                    plt.figure(); ax = plt.axes(projection="3d")
+                    ax.scatter3D(*first_actions[0,:,:3].T, c="k")
+                    ax.scatter3D(*first_actions[-1,:,:3].T, c="g")
+                    print(std[:,0])
+                    plt.show()
+                    raise Exception()
+
                 best = elites[0]
                 action = actions[-1,best,0].squeeze(0) # Take first action only
                 action = action.cpu().numpy() if self.continuous_actions else action.item()
@@ -116,9 +128,6 @@ class PetsAgent(Agent):
             states, actions, _, _, next_states = self.memory.sample(self.t, mode="latest", keep_terminal_next=True)
             if states is not None:
                 states = torch.cat([states, next_states[-1:]], dim=0) # Add final state.
-                
-                import matplotlib.pyplot as plt
-                from mpl_toolkits import mplot3d
                 
                 N = 20
                 DIMS = (0, 2, 1)
