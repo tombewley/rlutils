@@ -10,10 +10,7 @@ from gym.spaces.space import Space
 
 
 norm = torch.distributions.Normal(0, 1)
-
 bce_loss = torch.nn.BCELoss()
-bce_loss_no_red = torch.nn.BCELoss(reduction="none")
-
 
 # TODO: Split models out into separate files
 
@@ -25,9 +22,9 @@ class RewardNet:
         self.net = SequentialNetwork(device=self.device,
             input_space=[Space((len(feature_names),))],
             # Mean and log standard deviation
-            output_size=2, 
+            output_size=2,
             # 3x 256 hidden units used in PEBBLE paper
-            code=[(None, 256), "R", (256, 256), "R", (256, 256), "R", (256, None)], 
+            code=[(None, 256), "R", (256, 256), "R", (256, 256), "R", (256, None)],
             # 3e-4 used in PEBBLE paper
             lr=3e-4, 
             )
@@ -46,7 +43,7 @@ class RewardNet:
         mu, var, _ = self(features)
         return mu.sum(), var.sum()
 
-    def update(self, _, features, ep_lengths, A, __, ___, y):
+    def update(self, _, features, ep_lengths, A, i_list, j_list, y):
         ep_features = torch.split(features, ep_lengths)
         k_train, n_train = A.shape
         rng = np.random.default_rng()
@@ -66,17 +63,11 @@ class RewardNet:
                 loss = bce_loss(y_pred, y_batch) # Binary cross-entropy loss, PEBBLE equation 4
             elif self.P["preference_eqn"] == "bradley-terry":
                 # https://github.com/rll-research/BPref/blob/f3ece2ecf04b5d11b276d9bbb19b8004c29429d1/reward_model.py#L142
-                F_pairs = torch.vstack([F_pred[pair] for pair in abs_A_batch.bool()])
+                F_pairs = torch.vstack([F_pred[[i_list[k], j_list[k]]] for k in batch])
                 log_y_pred = torch.nn.functional.log_softmax(F_pairs, dim=1)
-                # NOTE: Relies on j coming first in the columns of A
-                loss = -(torch.column_stack([1-y_batch, y_batch]) * log_y_pred).sum() / y_batch.shape[0]
-
-                # y_pred = torch.exp(log_y_pred[:,1])
-            # print(torch.vstack((y_pred, y_batch)).detach().numpy())
-
+                loss = -(torch.column_stack([y_batch, 1-y_batch]) * log_y_pred).sum() / y_batch.shape[0]
             self.net.optimise(loss, retain_graph=False)
             losses.append(loss.item())
-            # print(losses[-1])
         # Normalise rewards to be negative on the training set, with unit standard deviation
         with torch.no_grad(): all_rewards, _, _ = self(features, normalise=False)
         self.shift, self.scale = all_rewards.max(), all_rewards.std()
@@ -108,7 +99,8 @@ class RewardTree:
     def m(self): return len(self.tree.leaves)
 
     def __call__(self, features):
-        indices = self.tree.get_leaf_nums(features.cpu().numpy())
+        # NOTE: Awkward torch <-> numpy conversion
+        indices = torch.tensor(self.tree.get_leaf_nums(features.cpu().numpy()))
 
         # =========
         # indices_old = self.features_to_indices(features)

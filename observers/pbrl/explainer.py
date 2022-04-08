@@ -3,52 +3,43 @@ import numpy as np
 from scipy.stats import norm
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
+from torch import no_grad
 
 
-class Logger:
-    def __init__(self, pbrl, P): self.pbrl, self.P = pbrl, P
-
+class Explainer:
+    def __init__(self, pbrl, P): 
+        self.pbrl, self.P = pbrl, P
+        self.plot_methods = {name[5:]: method for name, method in Explainer.__dict__.items()
+                             if callable(method) and name.startswith("plot_")}
+        
     def __call__(self, history_key):
-        path = f"logs/{self.pbrl.run_names[-1]}"
-        if not os.path.exists(path): os.makedirs(path)
-        model = self.pbrl.model
-        if history_key in self.pbrl.model.history: # TODO: Hacky
-            if "loss_correlation" in self.P["plots"]: 
-                self.plot_loss_correlation()
-                plt.savefig(f"{path}/loss_correlation_{history_key}.png")
-            if "tree_loss_vs_m" in self.P["plots"]:
-                self.plot_loss_vs_m(history_key)
-                plt.savefig(f"{path}/loss_{history_key}.png")
-            if "tree_diagram" in self.P["plots"]: 
-                model.diagram(model.tree, pred_dims=["reward"], verbose=True, out_name=f"{path}/tree_{history_key}", out_as="png")
-            if "tree_py" in self.P["plots"]: 
-                model.rules(model.tree, pred_dims="reward", sf=None, out_name=f"{path}/tree_{history_key}.py")
-            if "tree_rectangles" in self.P["plots"]:
-                for vis_dims, vis_lims in self.P["plots"]["tree_rectangles"]:
-                    cmap_lims = (model.r.min().item(), model.r.max().item())
-                    _, (ax1, ax2) = plt.subplots(1, 2, figsize=(24,8))
-                    model.rectangles(model.tree, vis_dims, attribute=("mean", "reward"), vis_lims=vis_lims, cmap_lims=cmap_lims, maximise=True, ax=ax1)
-                    # hr.show_leaf_numbers(self.tree, vis_dims, ax=ax1)
-                    model.rectangles(model.tree, vis_dims, attribute=("std", "reward"), vis_lims=vis_lims, maximise=True, ax=ax2)
-                    # hr.show_leaf_numbers(self.tree, vis_dims, ax=ax2)
-                    if False: # Overlay samples
-                        hr.show_samples(self.tree.root, vis_dims=vis_dims, colour_dim="reward", ax=ax1, cmap_lims=cmap_lims, cbar=False)
-                    plt.savefig(f"{path}/{vis_dims}_{history_key}.png")
-        if "Pr_matrix" in self.P["plots"]: 
-            self.plot_Pr_matrix()
-            plt.savefig(f"{path}/matrix_{history_key}.png")
-        if "sampler_matrix" in self.P["plots"]:
-            self.plot_sampler_matrix()
-            plt.savefig(f"{path}/sampler_matrix_{history_key}.png")
-        if "fitness_pdfs" in self.P["plots"]: 
-            self.plot_fitness_pdfs()
-            plt.savefig(f"{path}/pdfs_{history_key}.png")
-        if "alignment" in self.P["plots"]: 
-            self.plot_alignment()
-            plt.savefig(f"{path}/alignment_{history_key}.png")       
+        if self.P["save"]:
+            path = f"logs/{self.pbrl.run_names[-1]}"
+            if not os.path.exists(path): os.makedirs(path)
+        for plot in self.P["plots"]:
+            made = self.plot_methods[plot](self, history_key)
+            if made and self.P["save"]: plt.savefig(f"{path}/{plot}_{history_key}.png")
+        if self.P["show"]: self.show()
         plt.close("all")
 
-    def plot_loss_correlation(self):
+        # if history_key in self.pbrl.model.history: # TODO: Hacky
+        #     if "tree_diagram" in self.P["plots"]: 
+        #         self.pbrl.model.diagram(self.pbrl.model.tree, pred_dims=["reward"], verbose=True, out_name=f"{path}/tree_{history_key}", out_as="png")
+        #     if "tree_py" in self.P["plots"]: 
+        #         self.pbrl.model.rules(self.pbrl.model.tree, pred_dims="reward", sf=None, out_name=f"{path}/tree_{history_key}.py")
+        #     if "tree_rectangles" in self.P["plots"]:
+        #         for vis_dims, vis_lims in self.P["plots"]["tree_rectangles"]:
+        #             cmap_lims = (self.pbrl.model.r.min().item(), self.pbrl.model.r.max().item())
+        #             _, (ax1, ax2) = plt.subplots(1, 2, figsize=(24,8))
+        #             self.pbrl.model.rectangles(self.pbrl.model.tree, vis_dims, attribute=("mean", "reward"), vis_lims=vis_lims, cmap_lims=cmap_lims, maximise=True, ax=ax1)
+        #             # hr.show_leaf_numbers(self.tree, vis_dims, ax=ax1)
+        #             self.pbrl.model.rectangles(self.pbrl.model.tree, vis_dims, attribute=("std", "reward"), vis_lims=vis_lims, maximise=True, ax=ax2)
+        #             # hr.show_leaf_numbers(self.tree, vis_dims, ax=ax2)
+        #             if False: # Overlay samples
+        #                 hr.show_samples(self.tree.root, vis_dims=vis_dims, colour_dim="reward", ax=ax1, cmap_lims=cmap_lims, cbar=False)
+        #             plt.savefig(f"{path}/{vis_dims}_{history_key}.png")
+
+    def plot_loss_correlation(self, history_key):
         """Correlation between true and proxy loss."""
         _, ax = plt.subplots()
         ax.set_xlabel("Proxy (variance-based) loss"); ax.set_ylabel("True (preference) loss")
@@ -78,19 +69,19 @@ class Logger:
         ax1.plot(m_lims, loss_m_final - self.pbrl.model.P["alpha"] * (m_lims - m_final), c="g", ls="--", zorder=-1)
         ax1.set_ylim(bottom=0); ax2.set_ylim(bottom=0)
 
-    def plot_Pr_matrix(self):
-        """Binary matrix showing which comparisons have been made."""
+    def plot_preference_matrix(self, history_key):
+        """Binary matrix showing which preferences have been obtained."""
         plt.figure()
-        plt.imshow(self.pbrl.Pr, norm=Normalize(0, 1), interpolation="none")
+        plt.imshow(self.pbrl.preference_matrix, norm=Normalize(0, 1), interpolation="none", cmap="coolwarm_r")
 
-    def plot_sampler_matrix(self):
+    def plot_sampler_matrix(self, history_key):
         """Weighting matrix used by sampler."""
         plt.figure()
         for _, _, _, p in self.pbrl.sampler: 
             if p is not None: plt.imshow(p, interpolation="none")
             break
 
-    def plot_fitness_pdfs(self):
+    def plot_fitness_pdfs(self, history_key):
         """PDFs of fitness predictions."""
         mu, var = np.array([self.pbrl.fitness(ep) for ep in self.pbrl.episodes]).T
         std = np.sqrt(var)
@@ -103,31 +94,28 @@ class Logger:
         for i, m in enumerate(mu): plt.scatter(m, i, c="w")
         plt.yticks(range(len(mu)), fontsize=6)
     
-    def plot_alignment(self, vs="oracle", ax=None):
+    def plot_alignment(self, history_key, vs="oracle", ax=None, fill_std=False):
         """Decomposed fitness (+/- 1 std) vs a baseline, either:
             - Case V fitness, or
             - Ground truth fitness if an oracle is available    
         """
-        print("TODO: plot_alignment() is expensive!")
         if vs == "case_v": 
             raise NotImplementedError()
             baseline, xlabel = self.pbrl.model._ep_fitness_cv, "Case V Fitness"
             ranking = [self.model._connected[i] for i in np.argsort(baseline)]
         elif vs == "oracle":
             assert self.pbrl.interface.oracle is not None
-            if type(self.pbrl.interface.oracle) == list: 
-                raise NotImplementedError("List-based oracle is deprecated")
-                baseline = self.pbrl.interface.oracle
-            else: baseline = [sum(self.pbrl.interface.oracle(ep)) for ep in self.pbrl.episodes]
+            baseline = np.array([self.pbrl.interface.oracle(ep["transitions"]).sum().item() for _, ep in self.pbrl.graph.nodes(data=True)])
             xlabel = "Oracle Fitness"
             ranking = np.argsort(baseline)
-        mu, var = np.array([self.pbrl.fitness(self.pbrl.episodes[i]) for i in ranking]).T
-        std = np.sqrt(var)
+        with no_grad(): mu, var = np.array([self.pbrl.fitness(self.pbrl.graph.nodes[i]["transitions"]) for i in ranking]).T
         if ax is None: _, ax = plt.subplots()
-        baseline_sorted = sorted(baseline)
-        _, _, connected = self.pbrl.construct_A_and_y(self.pbrl.Pr); connected = set(connected)
+        baseline_sorted = baseline[ranking]
+        _, _, _, _, connected = self.pbrl.construct_A_and_y(); connected = set(connected)
         ax.scatter(baseline_sorted, mu, s=3, c=["k" if i in connected else "r" for i in ranking])
-        ax.fill_between(baseline_sorted, mu-std, mu+std, color=[.8,.8,.8], zorder=-1, lw=0)
+        if fill_std:
+            std = np.sqrt(var)
+            ax.fill_between(baseline_sorted, mu-std, mu+std, color=[.8,.8,.8], zorder=-1, lw=0)
         ax.set_xlabel(xlabel); ax.set_ylabel("Predicted Fitness")
         if False and vs == "oracle":
             baseline_conn, case_v_conn = [], []
@@ -141,8 +129,7 @@ class Logger:
             ax2.set_ylabel("Case V Fitness Fitness")
             ax2.yaxis.label.set_color("b")
 
-    def plot_comparison_graph(self, figsize=(12, 12)):
-        import networkx as nx # NOTE: Lazy import
+    def plot_preference_graph(self, history_key, figsize=(12, 12)):
         # Graph creation.
         self.graph = nx.DiGraph()
         n = len(self.episodes)
@@ -151,7 +138,7 @@ class Logger:
             if self.episodes[i] is not None: self.graph.nodes[i]["fitness"], _ = self.pbrl.fitness(self.pbrl.episodes[i])
         for i, f in zip(self._connected, self._ep_fitness_cv): 
             self.graph.nodes[i]["fitness_cv"] = f * len(self.episodes[i])
-        self.graph.add_weighted_edges_from([(j, i, self.Pr[i,j]) for i in range(n) for j in range(n) if not np.isnan(self.Pr[i,j])])
+        self.graph.add_weighted_edges_from([(j, i, self.preferences[i,j]) for i in range(n) for j in range(n) if not np.isnan(self.preferences[i,j])])
         # Graph plotting.
         plt.figure(figsize=figsize)
         fitness = list(nx.get_node_attributes(self.graph, "fitness").values())
@@ -176,3 +163,5 @@ class Logger:
         # nx.draw_networkx_edge_labels(self.graph, pos=pos, label_pos=0.4, font_size=6,
         #     edge_labels={(i, j): f"{d['weight']:.2f}" for i, j, d in self.graph.edges(data=True)}
         #     )
+
+    def show(self): plt.show()

@@ -88,12 +88,8 @@ class OracleInterface(Interface):
         self.P.update(P)
 
     def __call__(self, i, j):
-        if type(self.oracle) == list:
-            raise NotImplementedError("List-based oracle is deprecated")
-            ret_i, ret_j = self.oracle[i], self.oracle[j]
-        else:
-            ret_i = self.myopic_sum(self.oracle(self.pbrl.episodes[i]))
-            ret_j = self.myopic_sum(self.oracle(self.pbrl.episodes[j]))
+        ret_i = self.myopic_sum(self.oracle(self.pbrl.graph.nodes[i]["transitions"]))
+        ret_j = self.myopic_sum(self.oracle(self.pbrl.graph.nodes[j]["transitions"]))
         if max(ret_i, ret_j) < self.P["d_skip"]:  return "skip"
         diff = ret_i - ret_j
         if self.P["sigma"] == 0: P_i = 0.5 if diff == 0 else 1. if diff > 0 else 0.
