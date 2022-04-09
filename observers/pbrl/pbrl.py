@@ -16,7 +16,7 @@ class PbrlObserver:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.P = P
         self.run_names = run_names if run_names is not None else [] # NOTE: Order crucial to match with episodes
-        self.initialise_graph(episodes if episodes is not None else [])
+        self.initialise_graph(episodes)
         # Featuriser, reward model, trajectory pair sampler, preference collection interface and explainer are all modular
         self.featuriser = Featuriser(self.P["featuriser"]) if "featuriser" in self.P else {}
         self.model = self.P["model"]["class"](self.device, self.featuriser.names, self.P["model"]) if "model" in self.P else None
@@ -36,14 +36,15 @@ class PbrlObserver:
             self._num_batches = int(b)
             self._batch_num = 0
             self._n_on_prev_batch = 0
-            self._current_ep = []
+        self._current_ep = []
             
-    def initialise_graph(self, episodes):
+    def initialise_graph(self, episodes=None):
         """
         Load a dataset of episodes and initialise data structures.
         """
         self.graph = nx.DiGraph()
-        self.graph.add_nodes_from([(i, {"transitions": ep}) for i, ep in enumerate(episodes)])
+        self.graph.add_nodes_from([(i, {"transitions": ep}) for i, ep in
+                                   enumerate(episodes if episodes is not None else [])])
     
     def link(self, agent):
         """
