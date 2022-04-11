@@ -56,7 +56,7 @@ class PetsAgent(Agent):
                 mean    = torch.empty((self.P["cem_iterations"], self.model.horizon, 1, action_dim), device=self.device)
                 std     = torch.empty((self.P["cem_iterations"], self.model.horizon, 1, action_dim), device=self.device)
                 # NOTE: Initialise distribution parameters based on action space bounds.
-                mean[0], std[0] = self.act_b, self.act_k
+                mean[0], std[0] = self.act_b, 2*self.act_k
                 actions = torch.empty((self.P["cem_iterations"], self.P["cem_particles"], self.model.horizon, 1, action_dim), device=self.device)
                 returns = torch.zeros((self.P["cem_iterations"], self.P["cem_particles"]                                   ), device=self.device)
                 gamma_range = torch.tensor([self.P["gamma"]**t for t in range(self.model.horizon)], device=self.device).reshape(1,-1,1)
@@ -78,15 +78,15 @@ class PetsAgent(Agent):
                     plt.figure(); ax = plt.axes(projection="3d")
                     ax.scatter3D(*first_actions[0,:,:3].T, c="k")
                     ax.scatter3D(*first_actions[-1,:,:3].T, c="g")
+                    ax.scatter3D(*actions[-1,best,0,:3].T, c="r", s=100)
                     print(std[:,0])
                     plt.show()
-                    raise Exception()
 
                 best = elites[0]
                 action = actions[-1,best,0].squeeze(0) # Take first action only
                 action = action.cpu().numpy() if self.continuous_actions else action.item()
                 self.ep_action_stds.append((std[-1,0] / self.act_k).mean().item())
-                if do_extra: 
+                if do_extra:
                     extra["g_pred"] = returns[-1,best].item()
                     extra["next_state_pred"] = states[best,1].cpu().numpy()
             return action, extra

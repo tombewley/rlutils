@@ -36,7 +36,7 @@ def truncated_normal(tensor, mean, std, a, b):
         u = norm_cdf((b - mean) / std)
         # Uniformly fill tensor with values in [0, 1], then transform to [2l-1, 2u-1]
         tensor.uniform_()
-        tensor = ((tensor + l) * 2 * (u - l)) - 1
+        tensor = 2 * (l + tensor * (u - l)) - 1
         # Use inverse cdf transform for normal distribution to get truncated standard normal
         tensor.erfinv_()
         # Transform to proper mean, std
