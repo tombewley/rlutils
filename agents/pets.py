@@ -72,6 +72,7 @@ class PetsAgent(Agent):
                     states, _, rewards = self.model.rollout(state, actions=actions[i], ensemble_index="ts1_a")
                     returns[i] = (gamma_range * rewards).sum(axis=1).squeeze()
                     elites = returns[i].topk(self.P["cem_elites"]).indices
+                best = elites[0]
 
                 if self.P["cem_review"]:
                     first_actions = actions[:,:,0].squeeze()
@@ -82,7 +83,6 @@ class PetsAgent(Agent):
                     print(std[:,0])
                     plt.show()
 
-                best = elites[0]
                 action = actions[-1,best,0].squeeze(0) # Take first action only
                 action = action.cpu().numpy() if self.continuous_actions else action.item()
                 self.ep_action_stds.append((std[-1,0] / self.act_k).mean().item())
