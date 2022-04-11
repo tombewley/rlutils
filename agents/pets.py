@@ -143,3 +143,7 @@ class PetsAgent(Agent):
 
         del self.ep_action_stds[:], self.ep_losses[:]; self.t = 0
         return logs
+
+    def save(self, path, clear_memory=True):
+        print("Saving dynamics model only")
+        torch.save(self.model.nets, f"{path}.dynamics")

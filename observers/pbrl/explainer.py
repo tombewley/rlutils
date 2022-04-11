@@ -1,9 +1,10 @@
 import os
 import numpy as np
+from torch import no_grad, cat
 from scipy.stats import norm
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
-from torch import no_grad
+import networkx as nx
 
 
 class Explainer:
@@ -39,14 +40,19 @@ class Explainer:
         #                 hr.show_samples(self.tree.root, vis_dims=vis_dims, colour_dim="reward", ax=ax1, cmap_lims=cmap_lims, cbar=False)
         #             plt.savefig(f"{path}/{vis_dims}_{history_key}.png")
 
-    def plot_loss_correlation(self, history_key):
-        """Correlation between true and proxy loss."""
-        _, ax = plt.subplots()
+    def show(self): plt.show()
+
+# ======================================================
+# VISUAL (GLOBAL)
+
+    def plot_loss_correlation(self, history_key, ax=None, c="k"):
+        """Correlation between true and proxy loss over pruning sequence."""
+        if ax is None: _, ax = plt.subplots()
         ax.set_xlabel("Proxy (variance-based) loss"); ax.set_ylabel("True (preference) loss")
-        for history_key in self.pbrl.model.history:
-            history_prune = self.pbrl.model.history[history_key]["prune"]
-            plt.scatter([lp for _,_,_,_,lp in history_prune], [lt for _,_,_,lt,_ in history_prune], s=3, label=history_key)
-        plt.legend()
+        for key, ls, m, lw in (("split", "--", None, .5),("prune", "-", ".", 1)):
+            x = self.pbrl.model.history[history_key][key]
+            plt.plot([lp for _,_,lp in x], [lt for _,lt,_ in x], c=c, ls=ls, lw=lw, marker=m)
+        return ax
 
     def plot_loss_vs_m(self, history_key):
         """Loss as a function of m over splitting/pruning sequence."""
@@ -69,30 +75,31 @@ class Explainer:
         ax1.plot(m_lims, loss_m_final - self.pbrl.model.P["alpha"] * (m_lims - m_final), c="g", ls="--", zorder=-1)
         ax1.set_ylim(bottom=0); ax2.set_ylim(bottom=0)
 
-    def plot_preference_matrix(self, history_key):
-        """Binary matrix showing which preferences have been obtained."""
+    def plot_preference_matrix(self, history_key=None):
+        """Heatmap representation of preference dataset."""
         plt.figure()
-        plt.imshow(self.pbrl.preference_matrix, norm=Normalize(0, 1), interpolation="none", cmap="coolwarm_r")
+        plt.imshow(self.pbrl.graph.rewind(history_key).preference_matrix,
+                   norm=Normalize(0, 1), interpolation="none", cmap="coolwarm_r")
 
-    def plot_sampler_matrix(self, history_key):
-        """Weighting matrix used by sampler."""
+    def plot_sampler_matrix(self, history_key=None):
+        """Heatmaps representation of weighting matrix used by sampler."""
         plt.figure()
         for _, _, _, p in self.pbrl.sampler: 
             if p is not None: plt.imshow(p, interpolation="none")
             break
 
-    def plot_fitness_pdfs(self, history_key):
+    def plot_fitness_pdfs(self, history_key=None):
         """PDFs of fitness predictions."""
-        mu, var = np.array([self.pbrl.fitness(ep) for ep in self.pbrl.episodes]).T
+        with no_grad(): mu, var = np.array([self.pbrl.fitness(ep["transitions"]) for _, ep in self.pbrl.graph.nodes(data=True)]).T
         std = np.sqrt(var)
         mn, mx = np.min(mu - 3*std), np.max(mu + 3*std)
         rng = np.arange(mn, mx, (mx-mn)/1000)
         pdfs = np.array([norm.pdf(rng, m, s) for m, s in zip(mu, std)])
         pdfs /= pdfs.max(axis=1).reshape(-1, 1)
-        plt.figure(figsize=(5, 15))
-        plt.imshow(pdfs, aspect="auto", extent=[mn, mx, len(mu)-0.5, -0.5], interpolation="None")
-        for i, m in enumerate(mu): plt.scatter(m, i, c="w")
-        plt.yticks(range(len(mu)), fontsize=6)
+        plt.figure()#figsize=(5, 15))
+        plt.imshow(pdfs.T, aspect="auto", origin="lower", extent=[-0.5, len(mu)-0.5, mn, mx], interpolation="None")
+        for i, m in enumerate(mu): plt.scatter(i, m, c="w")
+        plt.xticks(range(len(mu)), fontsize=6)
     
     def plot_alignment(self, history_key, vs="oracle", ax=None, fill_std=False):
         """Decomposed fitness (+/- 1 std) vs a baseline, either:
@@ -129,39 +136,84 @@ class Explainer:
             ax2.set_ylabel("Case V Fitness Fitness")
             ax2.yaxis.label.set_color("b")
 
-    def plot_preference_graph(self, history_key, figsize=(12, 12)):
-        # Graph creation.
-        self.graph = nx.DiGraph()
-        n = len(self.episodes)
-        self.graph.add_nodes_from(range(n), fitness=np.nan, fitness_cv=np.nan)
-        for i in range(n): 
-            if self.episodes[i] is not None: self.graph.nodes[i]["fitness"], _ = self.pbrl.fitness(self.pbrl.episodes[i])
-        for i, f in zip(self._connected, self._ep_fitness_cv): 
-            self.graph.nodes[i]["fitness_cv"] = f * len(self.episodes[i])
-        self.graph.add_weighted_edges_from([(j, i, self.preferences[i,j]) for i in range(n) for j in range(n) if not np.isnan(self.preferences[i,j])])
-        # Graph plotting.
+    def plot_leaf_visitation(self, history_key=None):
+        """Heatmap representation of per-episode leaf visitation."""
+        plt.figure()
+        visits = cat([self.pbrl.model.n(self.pbrl.featuriser(ep["transitions"])).int().unsqueeze(1)
+                      for _,ep in self.pbrl.graph.nodes(data=True)], dim=1)
+        plt.imshow(visits.T, interpolation="none")
+
+    def plot_preference_graph(self, history_key=None, figsize=(12, 12)):
+        # self.pbrl.graph = nx.DiGraph()
+        # n = len(self.episodes)
+        # self.pbrl.graph.add_nodes_from(range(n), fitness=np.nan, fitness_cv=np.nan)
+        # for i in range(n):
+        #     if self.episodes[i] is not None: self.pbrl.graph.nodes[i]["fitness"], _ = self.pbrl.fitness(self.pbrl.episodes[i])
+        # for i, f in zip(self._connected, self._ep_fitness_cv):
+        #     self.pbrl.graph.nodes[i]["fitness_cv"] = f * len(self.episodes[i])
+        # self.pbrl.graph.add_weighted_edges_from([(j, i, self.preferences[i,j]) for i in range(n) for j in range(n) if not np.isnan(self.preferences[i,j])])
+        # fitness = list(nx.get_node_attributes(self.pbrl.graph, "fitness").values())
+        # fitness_cv = list(nx.get_node_attributes(self.pbrl.graph, "fitness_cv").values())
+        # vmin, vmax = min(np.nanmin(fitness), np.nanmin(fitness_cv)), max(np.nanmax(fitness), np.nanmax(fitness_cv))
+        g = self.pbrl.graph.rewind(history_key)._graph
+        # Plot nodes
         plt.figure(figsize=figsize)
-        fitness = list(nx.get_node_attributes(self.graph, "fitness").values())
-        fitness_cv = list(nx.get_node_attributes(self.graph, "fitness_cv").values())
-        vmin, vmax = min(np.nanmin(fitness), np.nanmin(fitness_cv)), max(np.nanmax(fitness), np.nanmax(fitness_cv))
-        pos = nx.drawing.nx_agraph.graphviz_layout(self.graph, prog="neato")
-        nx.draw_networkx_nodes(self.graph, pos=pos, 
+        pos = nx.drawing.nx_agraph.graphviz_layout(g, prog="neato")
+        nx.draw_networkx_nodes(g, pos=pos,
             node_size=500,
-            node_color=fitness_cv,
-            cmap="coolwarm_r", vmin=vmin, vmax=vmax
+            # node_color=fitness_cv,
+            # cmap="coolwarm_r", vmin=vmin, vmax=vmax
         )
-        nx.draw_networkx_nodes(self.graph, pos=pos, 
+        nx.draw_networkx_nodes(g, pos=pos,
             node_size=250,
-            node_color=fitness,
-            cmap="coolwarm_r", vmin=vmin, vmax=vmax,
+            # node_color=fitness,
+            # cmap="coolwarm_r", vmin=vmin, vmax=vmax,
             linewidths=1, edgecolors="w"
         )
-        edge_collection = nx.draw_networkx_edges(self.graph, pos=pos, node_size=500, connectionstyle="arc3,rad=0.1")
-        weights = list(nx.get_edge_attributes(self.graph, "weight").values())
-        for i, e in enumerate(edge_collection): e.set_alpha(weights[i])
-        nx.draw_networkx_labels(self.graph, pos=pos)
-        # nx.draw_networkx_edge_labels(self.graph, pos=pos, label_pos=0.4, font_size=6,
-        #     edge_labels={(i, j): f"{d['weight']:.2f}" for i, j, d in self.graph.edges(data=True)}
+        nx.draw_networkx_labels(g, pos=pos)
+        # Plot edges
+        edge_collection = nx.draw_networkx_edges(g, pos=pos,
+            node_size=500,
+            width=2, arrowsize=20,
+            edge_color=list(nx.get_edge_attributes(g, "preference").values()),
+            connectionstyle="arc3,rad=0.1",
+            edge_cmap=plt.cm.coolwarm_r
+        )
+        # weights = list(nx.get_edge_attributes(g, "preference").values())
+        # for i, e in enumerate(edge_collection): e.set_alpha(weights[i])
+        # nx.draw_networkx_edge_labels(g, pos=pos, label_pos=0.4, font_size=6,
+        #     edge_labels={(i, j): f"{d['weight']:.2f}" for i, j, d in g.edges(data=True)}
         #     )
 
-    def show(self): plt.show()
+# ======================================================
+# VISUAL (LOCAL)
+
+    def explain_episode_fitness(self, ep_num):
+        from .models import fitness_case_v
+        A, y, i_list, j_list, connected = self.pbrl.graph.construct_A_and_y()
+        f, d, _ = fitness_case_v(A, y, self.pbrl.model.P["p_clip"])
+        other_ep_num, target_fitness = [], []
+        for k, (i, j) in enumerate(zip(i_list, j_list)):
+            if i == ep_num:
+                other_ep_num.append(j)
+                target_fitness.append(f[j] + d[k].item())
+            elif j == ep_num:
+                other_ep_num.append(i)
+                target_fitness.append(f[i] - d[k].item())
+        plt.scatter(other_ep_num, target_fitness, s=5, c="k")
+        plt.plot([min(other_ep_num), max(other_ep_num)], [f[connected.index(ep_num)]]*2)
+
+    def explain_split(self, node, ep_wise=False):
+        import hyperrectangles as hr
+        d = node.space.idxify("reward", "ep")
+        if ep_wise: d.reverse()
+        hr.show_samples(node, vis_dims=[node.split_dim, d[0]], colour_dim=d[1])
+        plt.plot([node.split_threshold]*2, node.bb_min[d[0]], c="k")
+
+# ======================================================
+# TEXTUAL
+
+    def episode_leaf_sequence(self, ep_num):
+        """Return the sequence of leaves visited in an episode."""
+        return self.pbrl.model.tree.get_leaf_nums(self.pbrl.featuriser(
+               self.pbrl.graph.nodes[ep_num]["transitions"]).cpu().numpy())

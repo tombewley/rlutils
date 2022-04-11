@@ -39,7 +39,7 @@ class Sampler:
         """
         if self._k >= self.batch_size: return 1, None, None, None # Batch completed
         n = len(self.pbrl.graph); assert self.w.shape == (n, n)
-        not_rated = torch.isnan(self.pbrl.preference_matrix) # TODO: Can bypass this and compute directly from graph
+        not_rated = torch.isnan(self.pbrl.graph.preference_matrix) # TODO: Can bypass this and compute directly from graph
         if not_rated.sum() <= n: return 2, None, None, None # Fully connected
         p = self.w.clone()
         # Enforce non-identity constraint...
@@ -47,10 +47,10 @@ class Sampler:
         # ...enforce non-repeat constraint...
         rated = ~not_rated
         p[rated] = float("nan")
-        if self.P["constrained"]:
-            # ...enforce connectedness constraint...
-            unconnected = rated.sum(axis=1) == 0
-            if sum(unconnected) < n: p[unconnected] = float("nan") # (ignore connectedness if first ever rating)
+        # ...enforce connectedness constraint...
+        unconnected = rated.sum(axis=1) == 0
+        if sum(unconnected) < n: p[unconnected] = float("nan") # (ignore connectedness if first ever rating)
+        if self.P["recency_constraint"]:
             # ...enforce recency constraint...
             p[:self.ij_min, :self.ij_min] = float("nan")
         nans = torch.isnan(p)
@@ -69,12 +69,13 @@ class Sampler:
             i, j = argmaxes[self.np_rng.choice(len(argmaxes))]; i, j = i.item(), j.item()
         # Check that all constraints are satisfied
         assert i != j and not_rated[i, j]
-        if self.P["constrained"]:
+        if self.P["recency_constraint"]:
             if sum(unconnected) < n: assert rated[i].sum() > 0
             assert i >= self.ij_min or j >= self.ij_min
         self._k += 1
+        print(self.w)
+        print(p)
         return 0, i, j, p
-
 
 def ucb_sum(mu, var, num_std):
     ucb = mu + num_std * torch.sqrt(var)

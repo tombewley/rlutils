@@ -1,11 +1,10 @@
+from .graph import PreferenceGraph
 from .featuriser import Featuriser
-from .interfaces import Interface
 from .sampler import Sampler
 from .explainer import Explainer
 
 import os
 import torch
-import networkx as nx
 
 
 class PbrlObserver:
@@ -16,12 +15,11 @@ class PbrlObserver:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.P = P
         self.run_names = run_names if run_names is not None else [] # NOTE: Order crucial to match with episodes
-        self.initialise_graph(episodes)
-        # Featuriser, reward model, trajectory pair sampler, preference collection interface and explainer are all modular
-        self.featuriser = Featuriser(self.P["featuriser"]) if "featuriser" in self.P else {}
+        # Preference graph, featuriser, reward model, trajectory pair sampler, preference collection interface and explainer are all modular
+        self.graph = PreferenceGraph(self.device, episodes)
+        self.featuriser = Featuriser(self.P["featuriser"]) if "featuriser" in self.P else None
         self.model = self.P["model"]["class"](self.device, self.featuriser.names, self.P["model"]) if "model" in self.P else None
         self.sampler = Sampler(self, self.P["sampler"]) if "sampler" in self.P else None
-        assert issubclass(self.P["interface"]["class"], Interface)
         self.interface = self.P["interface"]["class"](self, self.P["interface"]) if "interface" in self.P else None
         self.explainer = Explainer(self, self.P["explainer"] if "explainer" in self.P else {})
         self._observing = "observe_freq" in self.P and self.P["observe_freq"] > 0
@@ -37,14 +35,6 @@ class PbrlObserver:
             self._batch_num = 0
             self._n_on_prev_batch = 0
         self._current_ep = []
-            
-    def initialise_graph(self, episodes=None):
-        """
-        Load a dataset of episodes and initialise data structures.
-        """
-        self.graph = nx.DiGraph()
-        self.graph.add_nodes_from([(i, {"transitions": ep}) for i, ep in
-                                   enumerate(episodes if episodes is not None else [])])
     
     def link(self, agent):
         """
@@ -81,7 +71,7 @@ class PbrlObserver:
 
     def preference_batch(self, history_key, batch_size=1, ij_min=0):
         """
-        Sample a batch of trajectory pairs and collect preferences via the interface.
+        Sample a batch of trajectory pairs, collect preferences via the interface, and add them to the graph.
         """
         budget = self.P["feedback_budget"] if "feedback_budget" in self.P else float("inf")
         self.sampler.batch_size, self.sampler.ij_min = batch_size, ij_min
@@ -91,22 +81,18 @@ class PbrlObserver:
                     preference = self.interface(i, j)
                     if preference == "esc": print("=== Feedback exited ==="); break
                     elif preference == "skip": print(f"({i}, {j}) skipped"); continue
-                    self.log_preference(history_key, i, j, preference)
+                    self.graph.add_preference(history_key, i, j, preference)
                     readout = f"{self.sampler._k} / {batch_size} ({len(self.graph.edges)} / {budget}): P({i} > {j}) = {preference}"
                     print(readout); self.interface.print("\n"+readout)
                 elif exit_code == 1: print("=== Batch complete ==="); break
                 elif exit_code == 2: print("=== Fully connected ==="); break
 
-    def log_preference(self, history_key, i, j, preference):
-        assert (not self.graph.has_edge(i, j)) and (not self.graph.has_edge(j, i)), f"Already have preference for ({i}, {j})"
-        self.graph.add_edge(i, j, history_key=history_key, preference=preference)
-
     def update(self, history_key):
         """
-        Update the reward function to reflect the current preference dataset.
+        Update the reward function using the provided preference graph.
         """
         # Assemble data structures needed for learning
-        A, y, i_list, j_list, connected = self.construct_A_and_y()
+        A, y, i_list, j_list, connected = self.graph.construct_A_and_y()
         print(f"Connected episodes: {len(connected)} / {len(self.graph)}")
         if len(connected) == 0: print("=== None connected ==="); return {}
         # Get lengths and apply feature mapping to all episodes that are connected to the preference graph
@@ -115,35 +101,7 @@ class PbrlObserver:
         features = self.featuriser(torch.cat(connected_ep_transitions)) # TODO: Don't concatenate here
         # Update the reward function using connected episodes
         logs = self.model.update(history_key, features, ep_lengths, A, i_list, j_list, y)
-        # If applicable, relabel the agent's replay memory using the updated reward function
-        self.relabel_memory()
         return logs
-
-    def construct_A_and_y(self):
-        """
-        Construct A and y matrices from the preference graph.
-        """
-        pairs, y, connected = [], [], set()
-        for i, j, data in self.graph.edges(data=True):
-            pairs.append([i, j]); y.append(data["preference"]); connected = connected | {i, j}
-        y = torch.tensor(y, device=self.device).float()
-        connected = sorted(list(connected))
-        A = torch.zeros((len(pairs), len(connected)), device=self.device)
-        i_list, j_list = [], []
-        for l, (i, j) in enumerate(pairs): 
-            i_c, j_c = connected.index(i), connected.index(j) # Indices in connected list
-            A[l, i_c], A[l, j_c] = 1, -1
-            i_list.append(i_c); j_list.append(j_c)
-        return A, y, i_list, j_list, connected
-
-    @property
-    def preference_matrix(self):
-        matrix = torch.tensor(nx.to_numpy_matrix(self.graph, weight="preference", nonedge=float("nan")), device=self.device).float()
-        reverse = (1 - matrix).T; mask = ~torch.isnan(reverse)
-        matrix[mask] = reverse[mask]
-        return matrix
-
-    def relabel_memory(self): pass
 
 # ==============================================================================
 # METHODS SPECIFIC TO ONLINE LEARNING
@@ -170,12 +128,13 @@ class PbrlObserver:
             logs["reward_sum_oracle"] = sum(self.interface.oracle(self._current_ep)).item()
         # Add episodes to the preference graph with a specified frequency
         if self._observing and (ep+1) % self.P["observe_freq"] == 0:
-            self.graph.add_node(ep, transitions=self._current_ep)
+            self.graph.add_episode(ep, transitions=self._current_ep)
             print(len(self.graph))
         if self._online:
             if (ep+1) % self.P["feedback_freq"] == 0 and (ep+1) <= self.P["num_episodes_before_freeze"]:    
                 # Calculate batch size.
                 if self.P["scheduling_coef"] > 0: # TODO: Make adaptive to remaining budget
+                    assert self.sampler.P["recency_constraint"]
                     K = self.P["feedback_budget"]
                     B = self._num_batches
                     f = self.P["feedback_freq"] / self.P["observe_freq"] # Number of episodes between batches
@@ -191,12 +150,16 @@ class PbrlObserver:
                 self._batch_num += 1 
                 self._n_on_prev_batch = len(self.graph)
                 logs.update(self.update(history_key=(ep+1)))
+                # If applicable, relabel the agent's replay memory using the updated reward function
+                self.relabel_memory()
             logs["feedback_count"] = len(self.graph.edges)
             # Periodically log and save out
             if self.explainer.P and (ep+1) % self.explainer.P["freq"] == 0: self.explainer(history_key=(ep+1))
         if self._saving and (ep+1) % self.P["save_freq"] == 0: self.save(history_key=(ep+1))
         self._current_ep = []
         return logs
+
+    def relabel_memory(self): pass
 
 # ==============================================================================
 # SAVING/LOADING
@@ -211,7 +174,7 @@ class PbrlObserver:
 
 def load(fname, P):
     """
-    Make an instance of PbRLObserver from the information stored by the .save() method.
+    Make an instance of PbrlObserver from the information stored by the .save() method.
     """
     dict = torch.load(fname, torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     pbrl = PbrlObserver(P)

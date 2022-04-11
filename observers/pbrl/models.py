@@ -130,7 +130,7 @@ class RewardTree:
         assert len(features) == sum(ep_lengths)
         # Compute fitness estimates for connected episodes, and apply uniform temporal prior to obtain reward targets
         # NOTE: scaling by episode lengths (making ep fitness correspond to sum not mean) causes weird behaviour
-        reward_target = fitness_case_v(A, y, self.P["p_clip"]) # * np.mean(ep_lengths) / ep_lengths
+        reward_target, _, _ = fitness_case_v(A, y, self.P["p_clip"]) # * np.mean(ep_lengths) / ep_lengths
         # Populate tree. 
         self.tree.space.data = np.hstack((
             # NOTE: Using index in connected list rather than pbrl.episodes
@@ -326,10 +326,10 @@ class RewardTree:
         assert not np.isnan(np.einsum("i->", loss))
         return loss, pair_diff[0], pair_var[0]
         
-    def features_to_indices(self, features):
-        def get_index(f):
-            return self.tree.leaves.index(next(iter(self.tree.propagate(list(f)+[None,None], mode="max"))))
-        return np.apply_along_axis(get_index, -1, features.cpu().numpy())
+    # def features_to_indices(self, features):
+    #     def get_index(f):
+    #         return self.tree.leaves.index(next(iter(self.tree.propagate(list(f)+[None,None], mode="max"))))
+    #     return np.apply_along_axis(get_index, -1, features.cpu().numpy())
 
     def n(self, features):
         assert len(features.shape) == 2
@@ -350,6 +350,6 @@ def fitness_case_v(A, y, p_clip):
     Uses Morrissey-Gulliksen least squares for incomplete comparison matrix.
     """
     d = norm.icdf(torch.clamp(y, p_clip, 1-p_clip)) # Clip to prevent infinite values
-    f = torch.linalg.lstsq(A.T @ A, A.T @ d, rcond=None)[0].cpu().numpy() # NOTE: NumPy implementation seems to be more stable
+    f, residuals, _, _ = torch.linalg.lstsq(A.T @ A, A.T @ d, rcond=None) # NOTE: NumPy implementation seems to be more stable
     # f = np.linalg.lstsq((A.T @ A).cpu().numpy(), (A.T @ d).cpu().numpy(), rcond=None)[0]
-    return f - f.max() # NOTE: Shift so that maximum fitness is zero (cost function)
+    return (f - f.max()).cpu().numpy(), d, residuals # NOTE: Shift so that maximum fitness is zero (cost function)
