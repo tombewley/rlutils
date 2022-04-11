@@ -73,8 +73,6 @@ class Sampler:
             if sum(unconnected) < n: assert rated[i].sum() > 0
             assert i >= self.ij_min or j >= self.ij_min
         self._k += 1
-        print(self.w)
-        print(p)
         return 0, i, j, p
 
 def ucb_sum(mu, var, num_std):
