@@ -106,14 +106,14 @@ class PbrlObserver:
 # ==============================================================================
 # METHODS SPECIFIC TO ONLINE LEARNING
 
-    def per_timestep(self, ep, t, state, action, next_state, reward, done, info, extra):
+    def per_timestep(self, ep_num, t, state, action, next_state, reward, done, info, extra):
         """
         Store transition for current timestep.
         """
         if "discrete_action_map" in self.P: action = self.P["discrete_action_map"][action]
         self._current_ep.append(list(state) + list(action) + list(next_state))
             
-    def per_episode(self, ep): 
+    def per_episode(self, ep_num):
         """
         Operations to complete at the end of an episode, which may include adding self._current_ep
         to the preference graph, creating logs, and (if self._online==True), occasionally gathering
@@ -127,11 +127,10 @@ class PbrlObserver:
         if self.interface is not None and self.interface.oracle is not None: 
             logs["reward_sum_oracle"] = sum(self.interface.oracle(self._current_ep)).item()
         # Add episodes to the preference graph with a specified frequency
-        if self._observing and (ep+1) % self.P["observe_freq"] == 0:
-            self.graph.add_episode(ep, transitions=self._current_ep)
-            print(len(self.graph))
+        if self._observing and (ep_num+1) % self.P["observe_freq"] == 0:
+            self.graph.add_episode(ep_num, transitions=self._current_ep)
         if self._online:
-            if (ep+1) % self.P["feedback_freq"] == 0 and (ep+1) <= self.P["num_episodes_before_freeze"]:    
+            if (ep_num+1) % self.P["feedback_freq"] == 0 and (ep_num+1) <= self.P["num_episodes_before_freeze"]:
                 # Calculate batch size.
                 if self.P["scheduling_coef"] > 0: # TODO: Make adaptive to remaining budget
                     assert self.sampler.P["recency_constraint"]
@@ -146,16 +145,16 @@ class PbrlObserver:
                     B = self._num_batches - self._batch_num # Remaining number of batches
                     batch_size = int(round(K / B))
                 # Gather preferences and update reward function
-                self.preference_batch(history_key=(ep+1), batch_size=batch_size, ij_min=self._n_on_prev_batch)
+                self.preference_batch(history_key=(ep_num+1), batch_size=batch_size, ij_min=self._n_on_prev_batch)
                 self._batch_num += 1 
                 self._n_on_prev_batch = len(self.graph)
-                logs.update(self.update(history_key=(ep+1)))
+                logs.update(self.update(history_key=(ep_num+1)))
                 # If applicable, relabel the agent's replay memory using the updated reward function
                 self.relabel_memory()
             logs["feedback_count"] = len(self.graph.edges)
             # Periodically log and save out
-            if self.explainer.P and (ep+1) % self.explainer.P["freq"] == 0: self.explainer(history_key=(ep+1))
-        if self._saving and (ep+1) % self.P["save_freq"] == 0: self.save(history_key=(ep+1))
+            if self.explainer.P and (ep_num+1) % self.explainer.P["freq"] == 0: self.explainer(history_key=(ep_num+1))
+        if self._saving and (ep_num+1) % self.P["save_freq"] == 0: self.save(history_key=(ep_num+1))
         self._current_ep = []
         return logs
 

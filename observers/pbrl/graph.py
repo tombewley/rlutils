@@ -10,7 +10,7 @@ class PreferenceGraph:
         self.device = device
         self._graph = nx.DiGraph()
         self._graph.add_nodes_from([(i, {"transitions": ep}) for i, ep in
-                                   enumerate(episodes if episodes is not None else [])])
+                                    enumerate(episodes if episodes is not None else [])])
 
     def __len__(self): return len(self._graph)
 
@@ -28,7 +28,11 @@ class PreferenceGraph:
         return matrix
 
     def add_episode(self, ep_num, transitions):
-        self._graph.add_node(ep_num, transitions=transitions)
+        """
+        NOTE: Currently ignores provided ep_num, and just numbers nodes as consecutive integers.
+        This creates a mismatch with ep_nums when observe_freq > 1.
+        """
+        self._graph.add_node(len(self._graph), transitions=transitions)
 
     def add_preference(self, history_key, i, j, preference):
         assert (not self._graph.has_edge(i, j)) and (not self._graph.has_edge(j, i)), f"Already have preference for ({i}, {j})"
