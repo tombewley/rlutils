@@ -31,10 +31,9 @@ class PreferenceGraph:
 
     def add_episode(self, ep_num, transitions):
         """
-        NOTE: Currently ignores provided ep_num, and just numbers nodes as consecutive integers.
-        This creates a mismatch with ep_nums when observe_freq > 1.
+        NOTE: Currently numbers nodes as consecutive integers, but stores ep_num as an attribute.
         """
-        self._graph.add_node(len(self._graph), transitions=transitions)
+        self._graph.add_node(len(self._graph), ep_num=ep_num, transitions=transitions)
 
     def add_preference(self, history_key, i, j, preference):
         assert i in self._graph and j in self._graph, "Invalid episode index"
@@ -45,6 +44,7 @@ class PreferenceGraph:
         """
         Construct A and y matrices from the preference graph.
         """
+        assert nx.is_weakly_connected(self._graph), "Morrissey-Gulliksen requires a connected graph."
         pairs, y, connected = [], [], set()
         for i, j, data in self._graph.edges(data=True):
             pairs.append([i, j]); y.append(data["preference"]); connected = connected | {i, j}
@@ -131,6 +131,4 @@ class PreferenceGraph:
                     edge_queue.update((set(self._graph.in_edges(node)) |
                                        set(self._graph.out_edges(node))) - {edge})
                     nodes.add(node)
-        sg = self.subgraph(edges)
-        assert len(sg.edges) == num_edges and nx.is_weakly_connected(sg._graph)
-        return sg
+        return self.subgraph(edges)
