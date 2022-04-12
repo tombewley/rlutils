@@ -2,6 +2,7 @@ from .graph import PreferenceGraph
 from .featuriser import Featuriser
 from .sampler import Sampler
 from .explainer import Explainer
+from .interactions import preference_batch, update_model
 
 import os
 import torch
@@ -17,6 +18,7 @@ class PbrlObserver:
         self.run_names = run_names if run_names is not None else [] # NOTE: Order crucial to match with episodes
         # Preference graph, featuriser, reward model, trajectory pair sampler, preference collection interface and explainer are all modular
         self.graph = PreferenceGraph(self.device, episodes)
+        # TODO: Make featuriser an attribute of self.model
         self.featuriser = Featuriser(self.P["featuriser"]) if "featuriser" in self.P else None
         self.model = self.P["model"]["class"](self.device, self.featuriser.names, self.P["model"]) if "model" in self.P else None
         self.sampler = Sampler(self, self.P["sampler"]) if "sampler" in self.P else None
@@ -55,7 +57,7 @@ class PbrlObserver:
         assert self.P["reward_source"] != "extrinsic", "This shouldn't have been called. Unwanted call to pbrl.link(agent)?"
         if "discrete_action_map" in self.P: actions = [self.P["discrete_action_map"][a] for a in actions] 
         transitions = torch.cat([states, actions, next_states], dim=-1)
-        if self.P["reward_source"] == "oracle": # NOTE: Oracle defined over raw transitions rather than features
+        if self.P["reward_source"] == "oracle":
             assert not return_params, "Oracle doesn't use normal distribution parameters"
             return self.interface.oracle(transitions)
         else:
@@ -67,43 +69,6 @@ class PbrlObserver:
         return self.model.fitness(self.featuriser(trajectory))
 
 # ==============================================================================
-# METHODS FOR EXECUTING THE LEARNING PROCESS
-
-    def preference_batch(self, history_key, batch_size=1, ij_min=0):
-        """
-        Sample a batch of trajectory pairs, collect preferences via the interface, and add them to the graph.
-        """
-        budget = self.P["feedback_budget"] if "feedback_budget" in self.P else float("inf")
-        self.sampler.batch_size, self.sampler.ij_min = batch_size, ij_min
-        with self.interface:
-            for exit_code, i, j, _ in self.sampler:
-                if exit_code == 0:
-                    preference = self.interface(i, j)
-                    if preference == "esc": print("=== Feedback exited ==="); break
-                    elif preference == "skip": print(f"({i}, {j}) skipped"); continue
-                    self.graph.add_preference(history_key, i, j, preference)
-                    readout = f"{self.sampler._k} / {batch_size} ({len(self.graph.edges)} / {budget}): P({i} > {j}) = {preference}"
-                    print(readout); self.interface.print("\n"+readout)
-                elif exit_code == 1: print("=== Batch complete ==="); break
-                elif exit_code == 2: print("=== Fully connected ==="); break
-
-    def update(self, history_key):
-        """
-        Update the reward function using the provided preference graph.
-        """
-        # Assemble data structures needed for learning
-        A, y, i_list, j_list, connected = self.graph.construct_A_and_y()
-        print(f"Connected episodes: {len(connected)} / {len(self.graph)}")
-        if len(connected) == 0: print("=== None connected ==="); return {}
-        # Get lengths and apply feature mapping to all episodes that are connected to the preference graph
-        connected_ep_transitions = [self.graph.nodes[i]["transitions"] for i in connected]
-        ep_lengths = [len(tr) for tr in connected_ep_transitions]
-        features = self.featuriser(torch.cat(connected_ep_transitions)) # TODO: Don't concatenate here
-        # Update the reward function using connected episodes
-        logs = self.model.update(history_key, features, ep_lengths, A, i_list, j_list, y)
-        return logs
-
-# ==============================================================================
 # METHODS SPECIFIC TO ONLINE LEARNING
 
     def per_timestep(self, ep_num, t, state, action, next_state, reward, done, info, extra):
@@ -111,13 +76,13 @@ class PbrlObserver:
         Store transition for current timestep.
         """
         if "discrete_action_map" in self.P: action = self.P["discrete_action_map"][action]
-        self._current_ep.append(list(state) + list(action) + list(next_state))
+        self._current_ep.append(list(state) + list(action) + list(next_state)) # TODO: Keep (s,a,s') separate when store in graph
             
     def per_episode(self, ep_num):
         """
         Operations to complete at the end of an episode, which may include adding self._current_ep
         to the preference graph, creating logs, and (if self._online==True), occasionally gathering
-        a preference batch and updating the reward function.
+        a preference batch and updating the reward model.
         """   
         self._current_ep = torch.tensor(self._current_ep, device=self.device).float() # Convert to tensor once appending finished
         logs = {}
@@ -144,14 +109,25 @@ class PbrlObserver:
                     K = self.P["feedback_budget"] - len(self.graph.edges) # Remaining budget
                     B = self._num_batches - self._batch_num # Remaining number of batches
                     batch_size = int(round(K / B))
-                # Gather preferences and update reward function
-                self.preference_batch(history_key=(ep_num+1), batch_size=batch_size, ij_min=self._n_on_prev_batch)
+                # Gather preferences and update reward model
+                logs.update(preference_batch(
+                    sampler=self.sampler,
+                    interface=self.interface,
+                    graph=self.graph,
+                    batch_size=batch_size,
+                    ij_min=self._n_on_prev_batch,
+                    history_key=(ep_num+1),
+                    budget=self.P["feedback_budget"]
+                ))
+                logs.update(update_model(
+                    graph=self.graph,
+                    featuriser=self.featuriser,
+                    model=self.model,
+                    history_key=(ep_num+1)
+                ))
+                self.relabel_memory() # If applicable, relabel the agent's replay memory using the updated reward
                 self._batch_num += 1 
                 self._n_on_prev_batch = len(self.graph)
-                logs.update(self.update(history_key=(ep_num+1)))
-                # If applicable, relabel the agent's replay memory using the updated reward function
-                self.relabel_memory()
-            logs["feedback_count"] = len(self.graph.edges)
             # Periodically log and save out
             if self.explainer.P and (ep_num+1) % self.explainer.P["freq"] == 0: self.explainer(history_key=(ep_num+1))
         if self._saving and (ep_num+1) % self.P["save_freq"] == 0: self.save(history_key=(ep_num+1))
