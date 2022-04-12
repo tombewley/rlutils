@@ -178,8 +178,10 @@ def load(fname, P):
     dict = torch.load(fname, torch.device("cuda" if torch.cuda.is_available() else "cpu"))
     pbrl = PbrlObserver(P)
     pbrl.graph = dict["graph"]
+    pbrl.graph.device = pbrl.device
     if dict["model"] is not None:
         assert pbrl.model is None, "New/existing model conflict."
         pbrl.model = dict["model"]
+        pbrl.model.device = pbrl.device
     print(f"Loaded {fname}")
     return pbrl

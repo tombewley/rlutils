@@ -42,7 +42,7 @@ class Explainer:
 
     def show(self): plt.show()
 
-# ======================================================
+# ==============================================================================
 # VISUAL (GLOBAL)
 
     def plot_loss_correlation(self, history_key, ax=None, c="k"):
@@ -98,7 +98,7 @@ class Explainer:
         pdfs /= pdfs.max(axis=1).reshape(-1, 1)
         plt.figure()#figsize=(5, 15))
         plt.imshow(pdfs.T, aspect="auto", origin="lower", extent=[-0.5, len(mu)-0.5, mn, mx], interpolation="None")
-        for i, m in enumerate(mu): plt.scatter(i, m, c="w")
+        # for i, m in enumerate(mu): plt.scatter(i, m, c="w")
         plt.xticks(range(len(mu)), fontsize=6)
     
     def plot_alignment(self, history_key, vs="oracle", ax=None, fill_std=False):
@@ -144,48 +144,9 @@ class Explainer:
         plt.imshow(visits.T, interpolation="none")
 
     def plot_preference_graph(self, history_key=None, figsize=(12, 12)):
-        # self.pbrl.graph = nx.DiGraph()
-        # n = len(self.episodes)
-        # self.pbrl.graph.add_nodes_from(range(n), fitness=np.nan, fitness_cv=np.nan)
-        # for i in range(n):
-        #     if self.episodes[i] is not None: self.pbrl.graph.nodes[i]["fitness"], _ = self.pbrl.fitness(self.pbrl.episodes[i])
-        # for i, f in zip(self._connected, self._ep_fitness_cv):
-        #     self.pbrl.graph.nodes[i]["fitness_cv"] = f * len(self.episodes[i])
-        # self.pbrl.graph.add_weighted_edges_from([(j, i, self.preferences[i,j]) for i in range(n) for j in range(n) if not np.isnan(self.preferences[i,j])])
-        # fitness = list(nx.get_node_attributes(self.pbrl.graph, "fitness").values())
-        # fitness_cv = list(nx.get_node_attributes(self.pbrl.graph, "fitness_cv").values())
-        # vmin, vmax = min(np.nanmin(fitness), np.nanmin(fitness_cv)), max(np.nanmax(fitness), np.nanmax(fitness_cv))
-        g = self.pbrl.graph.rewind(history_key)._graph
-        # Plot nodes
-        plt.figure(figsize=figsize)
-        pos = nx.drawing.nx_agraph.graphviz_layout(g, prog="neato")
-        nx.draw_networkx_nodes(g, pos=pos,
-            node_size=500,
-            # node_color=fitness_cv,
-            # cmap="coolwarm_r", vmin=vmin, vmax=vmax
-        )
-        nx.draw_networkx_nodes(g, pos=pos,
-            node_size=250,
-            # node_color=fitness,
-            # cmap="coolwarm_r", vmin=vmin, vmax=vmax,
-            linewidths=1, edgecolors="w"
-        )
-        nx.draw_networkx_labels(g, pos=pos)
-        # Plot edges
-        edge_collection = nx.draw_networkx_edges(g, pos=pos,
-            node_size=500,
-            width=2, arrowsize=20,
-            edge_color=list(nx.get_edge_attributes(g, "preference").values()),
-            connectionstyle="arc3,rad=0.1",
-            edge_cmap=plt.cm.coolwarm_r
-        )
-        # weights = list(nx.get_edge_attributes(g, "preference").values())
-        # for i, e in enumerate(edge_collection): e.set_alpha(weights[i])
-        # nx.draw_networkx_edge_labels(g, pos=pos, label_pos=0.4, font_size=6,
-        #     edge_labels={(i, j): f"{d['weight']:.2f}" for i, j, d in g.edges(data=True)}
-        #     )
+        raise NotImplementedError("Use self.pbrl.graph.show()")
 
-# ======================================================
+# ==============================================================================
 # VISUAL (LOCAL)
 
     def explain_episode_fitness(self, ep_num):
@@ -210,7 +171,7 @@ class Explainer:
         hr.show_samples(node, vis_dims=[node.split_dim, d[0]], colour_dim=d[1])
         plt.plot([node.split_threshold]*2, node.bb_min[d[0]], c="k")
 
-# ======================================================
+# ==============================================================================
 # TEXTUAL
 
     def episode_leaf_sequence(self, ep_num):
