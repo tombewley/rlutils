@@ -44,12 +44,11 @@ class PreferenceGraph:
         """
         Construct A and y matrices from the preference graph.
         """
-        assert nx.is_weakly_connected(self._graph), "Morrissey-Gulliksen requires a connected graph."
-        pairs, y, connected = [], [], set()
-        for i, j, data in self._graph.edges(data=True):
-            pairs.append([i, j]); y.append(data["preference"]); connected = connected | {i, j}
-        y = tensor(y, device=self.device).float()
-        connected = sorted(list(connected))
+        connected_subgraph = self.subgraph(self._graph.edges) # Remove unconnected episodes
+        assert nx.is_weakly_connected(connected_subgraph._graph), "Morrissey-Gulliksen requires a connected graph."
+        connected = sorted(connected_subgraph.nodes)
+        pairs = list(connected_subgraph.edges)
+        y = tensor([connected_subgraph.edges[ij]["preference"] for ij in pairs], device=self.device).float()
         A = zeros((len(pairs), len(connected)), device=self.device)
         i_list, j_list = [], []
         for l, (i, j) in enumerate(pairs): 
