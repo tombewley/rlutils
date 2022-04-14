@@ -117,8 +117,9 @@ class PreferenceGraph:
 
     def random_connected_subgraph(self, num_edges):
         """
-        Create a frozen connected subgraph with a specified number of edges.
+        Create a frozen connected subgraph with a specified number of preferences.
         Adapted from pseudocode in https://stackoverflow.com/a/64814482/.
+        TODO: Different selection strategies (e.g. prioritise pairs already in subgraph to increase density).
         """
         node = choice(list(self._graph.nodes)) # Random seed node
         edge_queue = set(self._graph.in_edges(node)) | set(self._graph.out_edges(node))
