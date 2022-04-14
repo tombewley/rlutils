@@ -28,15 +28,13 @@ def recursive_update(d1, d2, i=None, block_overwrite=False, verbose=False):
 
 def build_params(paths, params=None, root_dir="", verbose=False):
     if params is None: params = {}
-    paths = [p.replace("/",".") for p in paths]
-    root_dir = root_dir.replace("/", ".")
     update = {}
     for p in paths:
         i = None
         try:
             if "=" in p: # For parameter array
                 p, i = p.split("=")
-            new = importlib.import_module(f"{root_dir}.{p}").P
+            new = importlib.import_module(f"{root_dir}.{p}".replace("/",".")).P
         except ImportError: # If not a recognised config file, treat as filename for loading
             new = {"deployment": {"agent_load_fname": p}} 
         recursive_update(update, new, i=i, block_overwrite=True, verbose=False)
