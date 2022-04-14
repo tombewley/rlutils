@@ -19,9 +19,9 @@ def preference_batch(sampler, interface, graph, batch_size, ij_min, history_key,
             elif exit_code == 2: print("=== Fully connected ==="); break
     return {"feedback_count": len(graph.edges)}
 
-def update_model(graph, featuriser, model, history_key):
+def update_model(graph, model, history_key):
     """
-    Update a reward model using the provided preference graph and featuriser.
+    Update a reward model using the provided preference graph.
     """
     # Assemble data structures needed for learning
     A, y, i_list, j_list, connected = graph.construct_A_and_y()
@@ -29,8 +29,6 @@ def update_model(graph, featuriser, model, history_key):
     if len(connected) == 0: print("=== None connected ==="); return {}
     # Get lengths and apply feature mapping to all episodes that are connected to the preference graph
     connected_ep_transitions = [graph.nodes[i]["transitions"] for i in connected]
-    ep_lengths = [len(tr) for tr in connected_ep_transitions]
-    features = featuriser(cat(connected_ep_transitions))
     # Update the reward model using connected episodes
-    logs = model.update(history_key, features, ep_lengths, A, i_list, j_list, y)
+    logs = model.update(connected_ep_transitions, A, i_list, j_list, y, history_key)
     return logs

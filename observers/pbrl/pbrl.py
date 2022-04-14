@@ -1,5 +1,4 @@
 from .graph import PreferenceGraph
-from .featuriser import Featuriser
 from .sampler import Sampler
 from .explainer import Explainer
 from .interactions import preference_batch, update_model
@@ -16,11 +15,9 @@ class PbrlObserver:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.P = P
         self.run_names = run_names if run_names is not None else [] # NOTE: Order crucial to match with episodes
-        # Preference graph, featuriser, reward model, trajectory pair sampler, preference collection interface and explainer are all modular
+        # Preference graph, reward model, trajectory pair sampler, preference collection interface and explainer are all modular
         self.graph = PreferenceGraph(self.device, episodes)
-        # TODO: Make featuriser an attribute of self.model
-        self.featuriser = Featuriser(self.P["featuriser"]) if "featuriser" in self.P else None
-        self.model = self.P["model"]["class"](self.device, self.featuriser.names, self.P["model"]) if "model" in self.P else None
+        self.model = self.P["model"]["class"](self.P["model"]) if "model" in self.P else None
         self.sampler = Sampler(self, self.P["sampler"]) if "sampler" in self.P else None
         self.interface = self.P["interface"]["class"](self, self.P["interface"]) if "interface" in self.P else None
         self.explainer = Explainer(self, self.P["explainer"] if "explainer" in self.P else {})
@@ -61,12 +58,9 @@ class PbrlObserver:
             assert not return_params, "Oracle doesn't use normal distribution parameters"
             return self.interface.oracle(transitions)
         else:
-            mu, _, std = self.model(self.featuriser(transitions))
+            mu, _, std = self.model(transitions)
         if "rune_coef" in self.P: return mu + self.P["rune_coef"] * std
         else: return mu
-
-    def fitness(self, trajectory):
-        return self.model.fitness(self.featuriser(trajectory))
 
 # ==============================================================================
 # METHODS SPECIFIC TO ONLINE LEARNING
@@ -88,7 +82,7 @@ class PbrlObserver:
         logs = {}
         # Log reward sums
         if self.P["reward_source"] == "model": 
-            logs["reward_sum_model"] = self.fitness(self._current_ep)[0].item()
+            logs["reward_sum_model"] = self.model.fitness(self._current_ep)[0].item()
         if self.interface is not None and self.interface.oracle is not None: 
             logs["reward_sum_oracle"] = sum(self.interface.oracle(self._current_ep)).item()
         # Add episodes to the preference graph with a specified frequency
@@ -121,7 +115,6 @@ class PbrlObserver:
                 ))
                 logs.update(update_model(
                     graph=self.graph,
-                    featuriser=self.featuriser,
                     model=self.model,
                     history_key=(ep_num+1)
                 ))

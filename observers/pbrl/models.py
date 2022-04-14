@@ -1,3 +1,4 @@
+from .featuriser import Featuriser
 from ...common.networks import SequentialNetwork
 from ...common.utils import reparameterise
 
@@ -15,12 +16,18 @@ bce_loss = torch.nn.BCELoss()
 # TODO: Split models out into separate files
 
 
-class RewardNet:
-    def __init__(self, device, feature_names, P):
-        self.device = device
+class RewardModel:
+    def __init__(self, P):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.P = P
+        self.featuriser = Featuriser(self.P["featuriser"]) if "featuriser" in self.P else None
+
+
+class RewardNet:
+    def __init__(self, P):
+        RewardModel.__init__(self, P)
         self.net = SequentialNetwork(device=self.device,
-            input_space=[Space((len(feature_names),))],
+            input_space=[Space((len(self.featuriser.names),))],
             # Mean and log standard deviation
             output_size=2,
             # 3x 256 hidden units used in PEBBLE paper
@@ -43,8 +50,8 @@ class RewardNet:
         mu, var, _ = self(features)
         return mu.sum(), var.sum()
 
-    def update(self, _, features, ep_lengths, A, i_list, j_list, y):
-        ep_features = torch.split(features, ep_lengths)
+    def update(self, transitions, A, i_list, j_list, y, _):
+        features = self.featuriser(transitions)
         k_train, n_train = A.shape
         rng = np.random.default_rng()
         losses = []
@@ -55,7 +62,7 @@ class RewardNet:
             in_batch = abs_A_batch.sum(axis=0) > 0
             F_pred, var_pred = torch.zeros(n_train, device=self.device), torch.zeros(n_train, device=self.device)
             for i in range(n_train):
-                if in_batch[i]: F_pred[i], var_pred[i] = self.fitness(features=ep_features[i])
+                if in_batch[i]: F_pred[i], var_pred[i] = self.fitness(features=features[i])
             if self.P["preference_eqn"] == "thurstone":
                 pair_diff = A_batch @ F_pred
                 sigma = torch.sqrt(abs_A_batch @ var_pred)
@@ -69,30 +76,29 @@ class RewardNet:
             self.net.optimise(loss, retain_graph=False)
             losses.append(loss.item())
         # Normalise rewards to be negative on the training set, with unit standard deviation
-        with torch.no_grad(): all_rewards, _, _ = self(features, normalise=False)
+        with torch.no_grad(): all_rewards, _, _ = self(torch.cat(features), normalise=False)
         self.shift, self.scale = all_rewards.max(), all_rewards.std()
         return {"preference_loss": np.mean(losses)}
 
 
-class RewardTree:
-    def __init__(self, device, feature_names, P):
+class RewardTree(RewardModel):
+    def __init__(self, P):
+        RewardModel.__init__(self, P)
         # === Lazy import ===
         import hyperrectangles as hr
         self.rules, self.diagram, self.rectangles, self.show_split_quality = \
         hr.rules, hr.diagram, hr.show_rectangles, hr.show_split_quality
         # ===================
-        self.device = device
-        self.P = P
-        space = hr.Space(dim_names=feature_names+["ep", "reward"])
-        root = hr.node.Node(space, sorted_indices=space.all_sorted_indices) 
+        space = hr.Space(dim_names=self.featuriser.names+["ep", "reward"])
+        root = hr.node.Node(space, sorted_indices=space.all_sorted_indices)
         self.tree = hr.tree.Tree(
-            name="reward_function", 
+            name="reward_function",
             root=root, 
-            split_dims=space.idxify(feature_names), 
+            split_dims=space.idxify(self.featuriser.names),
             eval_dims=space.idxify(["reward"]),
             )
         self.r = torch.zeros(self.m, device=self.device)
-        self.var = torch.zeros(self.m, device=self.device) 
+        self.var = torch.zeros(self.m, device=self.device)
         self.history = {} # History of tree modifications
 
     @property
@@ -119,22 +125,22 @@ class RewardTree:
         n = self.n(features)
         return n @ self.r, n @ torch.diag(self.var) @ n.T
 
-    def update(self, history_key, features, ep_lengths, A, i_list, j_list, y, reset_tree=True):
+    def update(self, transitions, A, i_list, j_list, y, history_key, reset_tree=True):
         """
         Update the tree-structured reward function given a preference dataset.
         If reset_tree=True, the tree is first pruned back to its root (i.e. start from scratch).
         """
         # Store private variables for this update and perform verification
-        self._num_eps, self._i_list, self._j_list, self._y,  = len(ep_lengths), i_list, j_list, y.cpu().numpy()
+        self._num_eps, self._i_list, self._j_list, self._y,  = len(transitions), i_list, j_list, y.cpu().numpy()
         assert A.shape == (len(self._i_list), self._num_eps)
-        assert len(features) == sum(ep_lengths)
+        ep_lengths = [len(tr) for tr in transitions]
         # Compute fitness estimates for connected episodes, and apply uniform temporal prior to obtain reward targets
         # NOTE: scaling by episode lengths (making ep fitness correspond to sum not mean) causes weird behaviour
         reward_target, _, _ = fitness_case_v(A, y, self.P["p_clip"]) # * np.mean(ep_lengths) / ep_lengths
         # Populate tree. 
         self.tree.space.data = np.hstack((
             # NOTE: Using index in connected list rather than pbrl.episodes
-            features.cpu().numpy(),
+            self.featuriser(torch.cat(transitions)).cpu().numpy(),
             np.vstack([[[i, r]] * l for i, (r, l) in enumerate(zip(reward_target, ep_lengths))]),
             ))
         if reset_tree: self.tree.prune_to(self.tree.root) 
