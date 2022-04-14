@@ -56,7 +56,7 @@ class PetsAgent(Agent):
                 mean    = torch.empty((self.P["cem_iterations"], self.model.horizon, 1, action_dim), device=self.device)
                 std     = torch.empty((self.P["cem_iterations"], self.model.horizon, 1, action_dim), device=self.device)
                 # NOTE: Initialise distribution parameters based on action space bounds.
-                mean[0], std[0] = self.act_b, 2*self.act_k
+                mean[0], std[0] = self.act_b, 1*self.act_k
                 actions = torch.empty((self.P["cem_iterations"], self.P["cem_particles"], self.model.horizon, 1, action_dim), device=self.device)
                 returns = torch.zeros((self.P["cem_iterations"], self.P["cem_particles"]                                   ), device=self.device)
                 gamma_range = torch.tensor([self.P["gamma"]**t for t in range(self.model.horizon)], device=self.device).reshape(1,-1,1)
