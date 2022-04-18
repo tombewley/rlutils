@@ -77,7 +77,7 @@ class RewardNet:
             self.net.optimise(loss, retain_graph=False)
             losses.append(loss.item())
         # Normalise rewards to be negative on the training set, with unit standard deviation
-        with torch.no_grad(): all_rewards, _, _ = self(torch.cat(features), normalise=False)
+        with torch.no_grad(): all_rewards, _, _ = self(torch.cat(features=features), normalise=False)
         self.shift, self.scale = all_rewards.max(), all_rewards.std()
         return {"preference_loss": np.mean(losses)}
 
