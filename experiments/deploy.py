@@ -5,11 +5,6 @@ import numpy as np
 from tqdm import tqdm
 from gym import wrappers
 
-""""
-TODO: Repeated calls with persistent run_id causes Monitor wrapper to be re-applied! Possible solutions:
-- Unwrap on agent.env.close()
-- Never actually wrap agent.env, but create copy in here which does have wrappers
-"""
 
 P_DEFAULT = {"num_episodes": int(1e6), "render_freq": 1}
 
@@ -56,7 +51,8 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers={}, run_id=
     if do_checkpoints: import os; save_dir += f"/{run_name}"; os.makedirs(save_dir, exist_ok=True) 
     for o in observers.values(): o.run_names.append(run_name) 
 
-    # Add wrappers to environment.
+    # Add temporary wrappers to environment. NOTE: These are discarded when deployment is complete.
+    env_before_wrappers = agent.env
     if "episode_time_limit" in P: # Time limit.
         agent.env = wrappers.TimeLimit(agent.env, P["episode_time_limit"])
     if "video_freq" in P and P["video_freq"] > 0: # Video recording. NOTE: This must be the outermost wrapper.
@@ -123,5 +119,6 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers={}, run_id=
         # Clean up.
         if renderer: renderer.close()
         agent.env.close()
+    agent.env = env_before_wrappers
 
     return run_id, run_name # Return run ID and name for reference.
