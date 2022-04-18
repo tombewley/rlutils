@@ -37,7 +37,8 @@ class RewardNet:
             )
         self.shift, self.scale = 0., 1.
 
-    def __call__(self, features, normalise=True):
+    def __call__(self, transitions=None, features=None, normalise=True):
+        if features is None: features = self.featuriser(transitions)
         mu, log_std = reparameterise(self.net(features), clamp=("soft", -2, 2), params=True)
         # NOTE: Scaling up std output helps avoid extreme probabilities
         mu, std = mu.squeeze(1), torch.exp(log_std).squeeze(1) * 100. 
@@ -46,12 +47,12 @@ class RewardNet:
         var = torch.pow(std, 2.)
         return mu, var, std
 
-    def fitness(self, features):
-        mu, var, _ = self(features)
+    def fitness(self, transitions=None, features=None):
+        mu, var, _ = self(transitions, features)
         return mu.sum(), var.sum()
 
     def update(self, transitions, A, i_list, j_list, y, _):
-        features = self.featuriser(transitions)
+        features = [self.featuriser(tr) for tr in transitions] # Featurising up-front may be faster if sampling many batches
         k_train, n_train = A.shape
         rng = np.random.default_rng()
         losses = []
@@ -104,9 +105,9 @@ class RewardTree(RewardModel):
     @property
     def m(self): return len(self.tree.leaves)
 
-    def __call__(self, features):
+    def __call__(self, transitions):
         # NOTE: Awkward torch <-> numpy conversion
-        indices = torch.tensor(self.tree.get_leaf_nums(features.cpu().numpy()))
+        indices = torch.tensor(self.tree.get_leaf_nums(self.featuriser(transitions).cpu().numpy()))
 
         # =========
         # indices_old = self.features_to_indices(features)
@@ -120,9 +121,9 @@ class RewardTree(RewardModel):
         std = torch.sqrt(var)     
         return mu, var, std
 
-    def fitness(self, features): 
+    def fitness(self, transitions):
         # https://www.statlect.com/probability-distributions/normal-distribution-linear-combinations
-        n = self.n(features)
+        n = self.n(transitions)
         return n @ self.r, n @ torch.diag(self.var) @ n.T
 
     def update(self, transitions, A, i_list, j_list, y, history_key, reset_tree=True):
@@ -337,10 +338,10 @@ class RewardTree(RewardModel):
     #         return self.tree.leaves.index(next(iter(self.tree.propagate(list(f)+[None,None], mode="max"))))
     #     return np.apply_along_axis(get_index, -1, features.cpu().numpy())
 
-    def n(self, features):
-        assert len(features.shape) == 2
+    def n(self, transitions):
+        assert len(transitions.shape) == 2
         n = torch.zeros(self.m, device=self.device)
-        for x in self.tree.get_leaf_nums(features.cpu().numpy()): n[x] += 1
+        for x in self.tree.get_leaf_nums(self.featuriser(transitions).cpu().numpy()): n[x] += 1
         return n
 
     def compute_r_and_var(self):
