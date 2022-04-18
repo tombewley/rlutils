@@ -29,11 +29,11 @@ class PreferenceGraph:
         matrix[mask] = reverse[mask]
         return matrix
 
-    def add_episode(self, ep_num, transitions):
+    def add_episode(self, run_name, ep_num, transitions):
         """
         NOTE: Currently numbers nodes as consecutive integers, but stores ep_num as an attribute.
         """
-        self._graph.add_node(len(self._graph), ep_num=ep_num, transitions=transitions)
+        self._graph.add_node(len(self._graph), run_name=run_name, ep_num=ep_num, transitions=transitions)
 
     def add_preference(self, history_key, i, j, preference):
         assert i in self._graph and j in self._graph, "Invalid episode index"

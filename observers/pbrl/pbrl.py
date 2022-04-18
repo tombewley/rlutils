@@ -87,7 +87,7 @@ class PbrlObserver:
             logs["reward_sum_oracle"] = sum(self.interface.oracle(self._current_ep)).item()
         # Add episodes to the preference graph with a specified frequency
         if self._observing and (ep_num+1) % self.P["observe_freq"] == 0:
-            self.graph.add_episode(ep_num, transitions=self._current_ep)
+            self.graph.add_episode(run_name=self.run_names[-1], ep_num=ep_num, transitions=self._current_ep)
         if self._online:
             if (ep_num+1) % self.P["feedback_freq"] == 0 and (ep_num+1) <= self.P["num_episodes_before_freeze"]:
                 # Calculate batch size.
