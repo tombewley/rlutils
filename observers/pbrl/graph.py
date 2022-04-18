@@ -29,11 +29,11 @@ class PreferenceGraph:
         matrix[mask] = reverse[mask]
         return matrix
 
-    def add_episode(self, run_name, ep_num, transitions):
+    def add_episode(self, transitions, **kwargs):
         """
         NOTE: Currently numbers nodes as consecutive integers, but stores ep_num as an attribute.
         """
-        self._graph.add_node(len(self._graph), run_name=run_name, ep_num=ep_num, transitions=transitions)
+        self._graph.add_node(len(self._graph), transitions=transitions, **kwargs)
 
     def add_preference(self, history_key, i, j, preference):
         assert i in self._graph and j in self._graph, "Invalid episode index"
@@ -45,7 +45,8 @@ class PreferenceGraph:
         Construct A and y matrices from the preference graph.
         """
         connected_subgraph = self.subgraph(self._graph.edges) # Remove unconnected episodes
-        assert nx.is_weakly_connected(connected_subgraph._graph), "Morrissey-Gulliksen requires a connected graph."
+        if len(connected_subgraph) > 0:
+            assert nx.is_weakly_connected(connected_subgraph._graph), "Morrissey-Gulliksen requires a connected graph."
         connected = sorted(connected_subgraph.nodes)
         pairs = list(connected_subgraph.edges)
         y = tensor([connected_subgraph.edges[ij]["preference"] for ij in pairs], device=self.device).float()

@@ -25,7 +25,7 @@ class Sampler:
             n = len(self.pbrl.graph); self.w = torch.zeros((n, n), device=self.pbrl.device)
         else:
             with torch.no_grad(): 
-                mu, var = torch.tensor([self.pbrl.fitness(ep["transitions"]) for _, ep in self.pbrl.graph.nodes(data=True)], device=self.pbrl.device).T
+                mu, var = torch.tensor([self.pbrl.model.fitness(ep["transitions"]) for _, ep in self.pbrl.graph.nodes(data=True)], device=self.pbrl.device).T
             if "ucb" in self.P["weight"]:
                 self.w = ucb_sum(mu, var, num_std=self.P["num_std"])
                 if self.P["weight"] == "ucb_r": self.w = -self.w # Invert
