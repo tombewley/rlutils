@@ -67,7 +67,7 @@ class Observer:
 
     def per_episode(self, ep): 
         # Periodically save out.
-        if (ep+1) % self.P["save_freq"] == 0: self.save()
+        if self.P["save_freq"] > 0 and (ep+1) % self.P["save_freq"] == 0: self.save()
         return {}
 
     def add_future(self, dims, gamma, mode="sum", new_dims=None):
