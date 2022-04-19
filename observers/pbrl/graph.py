@@ -40,14 +40,16 @@ class PreferenceGraph:
         assert (not self._graph.has_edge(i, j)) and (not self._graph.has_edge(j, i)), f"Already have preference for ({i}, {j})"
         self._graph.add_edge(i, j, history_key=history_key, preference=preference)
 
-    def construct_A_and_y(self):
+    def make_data_structures(self, unconnected_ok=False):
         """
-        Construct A and y matrices from the preference graph.
+        Starting with the preference graph, assemble data structures needed for model updates.
         """
         connected_subgraph = self.subgraph(self._graph.edges) # Remove unconnected episodes
-        if len(connected_subgraph) > 0:
+        print(f"Connected episodes: {len(connected_subgraph)} / {len(self)}")
+        if not(unconnected_ok) and len(connected_subgraph) > 0:
             assert nx.is_weakly_connected(connected_subgraph._graph), "Morrissey-Gulliksen requires a connected graph."
         connected = sorted(connected_subgraph.nodes)
+        transitions = [connected_subgraph.nodes[i]["transitions"] for i in connected]
         pairs = list(connected_subgraph.edges)
         y = tensor([connected_subgraph.edges[ij]["preference"] for ij in pairs], device=self.device).float()
         A = zeros((len(pairs), len(connected)), device=self.device)
@@ -56,7 +58,7 @@ class PreferenceGraph:
             i_c, j_c = connected.index(i), connected.index(j) # Indices in connected list
             A[l, i_c], A[l, j_c] = 1, -1
             i_list.append(i_c); j_list.append(j_c)
-        return A, y, i_list, j_list, connected
+        return transitions, A, i_list, j_list, y
 
     def show(self, figsize=(12, 12)):
         # self.pbrl.graph = nx.DiGraph()
@@ -121,7 +123,7 @@ class PreferenceGraph:
         Adapted from pseudocode in https://stackoverflow.com/a/64814482/.
         TODO: Different selection strategies (e.g. prioritise pairs already in subgraph to increase density).
         """
-        node = choice(list(self._graph.nodes)) # Random seed node
+        node = choice([node for node in self.nodes if self._graph.degree(node) > 0]) # Random seed node
         edge_queue = set(self._graph.in_edges(node)) | set(self._graph.out_edges(node))
         nodes, edges = set(), set()
         for _ in range(num_edges):
@@ -132,4 +134,4 @@ class PreferenceGraph:
                     edge_queue.update((set(self._graph.in_edges(node)) |
                                        set(self._graph.out_edges(node))) - {edge})
                     nodes.add(node)
-        return self.subgraph(edges)
+        return self.subgraph(edges), self.subgraph([e for e in self.edges if e not in edges])

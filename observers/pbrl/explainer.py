@@ -49,7 +49,7 @@ class Explainer:
         """Correlation between true and proxy loss over pruning sequence."""
         if ax is None: _, ax = plt.subplots()
         ax.set_xlabel("Proxy (variance-based) loss"); ax.set_ylabel("True (preference) loss")
-        for key, ls, m, lw in (("split", "--", None, .5),("prune", "-", ".", 1)):
+        for key, ls, m, lw in (("grow", "--", None, .5),("prune", "-", ".", 1)):
             x = self.pbrl.model.history[history_key][key]
             plt.plot([lp for _,_,lp in x], [lt for _,lt,_ in x], c=c, ls=ls, lw=lw, marker=m)
         return ax
@@ -61,7 +61,7 @@ class Explainer:
         ax2 = ax1.twinx()
         ax2.set_ylabel("Proxy (variance-based) loss")
         ax2.yaxis.label.set_color("b")
-        m_range_split, loss_split, proxy_split = np.array(self.pbrl.model.history[history_key]["split"]).T
+        m_range_split, loss_split, proxy_split = np.array(self.pbrl.model.history[history_key]["grow"]).T
         m_range_prune, loss_prune, proxy_prune = np.array(self.pbrl.model.history[history_key]["prune"]).T
         m_final = self.pbrl.model.history[history_key]["m"]
         loss_m_final = loss_prune[np.argwhere(m_range_prune == m_final)[0]]

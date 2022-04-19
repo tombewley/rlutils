@@ -1,7 +1,7 @@
 from .graph import PreferenceGraph
 from .sampler import Sampler
 from .explainer import Explainer
-from .interactions import preference_batch, update_model
+from .interactions import preference_batch
 
 import os
 import torch
@@ -113,9 +113,8 @@ class PbrlObserver:
                     history_key=(ep_num+1),
                     budget=self.P["feedback_budget"]
                 ))
-                logs.update(update_model(
+                logs.update(self.model.update(
                     graph=self.graph,
-                    model=self.model,
                     history_key=(ep_num+1)
                 ))
                 self.relabel_memory() # If applicable, relabel the agent's replay memory using the updated reward
