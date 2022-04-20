@@ -1,5 +1,5 @@
 import networkx as nx
-from random import choice
+from numpy.random import default_rng
 from torch import tensor, isnan, zeros
 import matplotlib.pyplot as plt
 
@@ -13,6 +13,10 @@ class PreferenceGraph:
         self._graph = nx.DiGraph()
         self._graph.add_nodes_from([(i, {"transitions": ep}) for i, ep in
                                     enumerate(episodes if episodes is not None else [])])
+        self.seed()
+
+    def seed(self, seed=None):
+        self.rng = default_rng(seed)
 
     def __len__(self): return len(self._graph)
 
@@ -123,7 +127,7 @@ class PreferenceGraph:
         Adapted from pseudocode in https://stackoverflow.com/a/64814482/.
         TODO: Different selection strategies (e.g. prioritise pairs already in subgraph to increase density).
         """
-        node = choice([node for node in self.nodes if self._graph.degree(node) > 0]) # Random seed node
+        node = self.rng.choice([node for node in self.nodes if self._graph.degree(node) > 0]) # Random seed node
         edge_queue = set(self._graph.in_edges(node)) | set(self._graph.out_edges(node))
         nodes, edges = set(), set()
         for _ in range(num_edges):
