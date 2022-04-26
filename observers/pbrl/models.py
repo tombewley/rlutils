@@ -139,7 +139,7 @@ class RewardTree(RewardModel):
                 history["prune"] = self.prune(tree, prune_graph)
             else:
                 if len(graph.edges) < 1: return {}
-                self.populate(graph)
+                self.populate(tree, graph)
                 history["grow"], history["prune"] = self.grow(tree), self.prune(tree, graph)
             history["m"] = len(tree)
             history["loss"] = [l for m,l,_ in history["prune"] if m == len(tree)][0]
@@ -147,7 +147,7 @@ class RewardTree(RewardModel):
         self.tree = trees[i]
         self.history[history_key] = histories[i]
 
-        print([(_i, h["loss"]) for _i, h in enumerate(histories)])
+        print([(_i, h["m"], h["loss"]) for _i, h in enumerate(histories)])
         print(i)
         print(self.rules(self.tree, pred_dims="reward", sf=5))
 

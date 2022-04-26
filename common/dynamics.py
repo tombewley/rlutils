@@ -84,7 +84,7 @@ class DynamicsModel:
         states      = torch.empty((num_particles, horizon+1, batch_size, states_init.shape[1]), device=states_init.device)
         rewards     = torch.zeros((num_particles, horizon,   batch_size                      ), device=states_init.device)
         if self.termination_function is not None:
-            dones   = torch.zeros((num_particles,  horizon,   batch_size                     ), device=states_init.device, dtype=bool)
+            dones   = torch.zeros((num_particles,  horizon,  batch_size                      ), device=states_init.device, dtype=bool)
         states[:,0] = states_init
         for t in range(horizon):
             if using_policy: actions[:,t] = policy(states[:,t]) # If using a policy, action selection is closed-loop.
