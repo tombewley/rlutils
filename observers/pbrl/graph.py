@@ -127,12 +127,14 @@ class PreferenceGraph:
         Adapted from pseudocode in https://stackoverflow.com/a/64814482/.
         TODO: Different selection strategies (e.g. prioritise pairs already in subgraph to increase density).
         """
+
+
         node = self.rng.choice([node for node in self.nodes if self._graph.degree(node) > 0]) # Random seed node
         edge_queue = set(self._graph.in_edges(node)) | set(self._graph.out_edges(node))
         nodes, edges = set(), set()
         for _ in range(num_edges):
-            edge = edge_queue.pop() # Random connected edge
-            edges.add(edge)
+            edge = tuple(self.rng.choice(tuple(edge_queue))) # Random connected edge
+            edge_queue.remove(edge); edges.add(edge)
             for node in edge:
                 if node not in nodes:
                     edge_queue.update((set(self._graph.in_edges(node)) |
