@@ -8,6 +8,7 @@ from scipy.special import xlogy, xlog1py
 from scipy.stats import norm as norm_s
 from tqdm import tqdm
 from gym.spaces.space import Space
+import hyperrectangles as hr
 
 
 norm = torch.distributions.Normal(0, 1)
@@ -87,25 +88,11 @@ class RewardNet:
 class RewardTree(RewardModel):
     def __init__(self, P):
         RewardModel.__init__(self, P)
-        # === Lazy import ===
-        import hyperrectangles as hr
+        self.tree = self.create_empty_tree()
+        self.history = {} # History of tree modifications
+        # Bring in some convenient visualisation methods
         self.rules, self.diagram, self.rectangles, self.show_split_quality = \
         hr.rules, hr.diagram, hr.show_rectangles, hr.show_split_quality
-        # ===================
-        space = hr.Space(dim_names=self.featuriser.names+["ep", "reward"])
-        root = hr.node.Node(space, sorted_indices=space.all_sorted_indices)
-        self.tree = hr.tree.Tree(
-            name="reward_function",
-            root=root, 
-            split_dims=space.idxify(self.featuriser.names),
-            eval_dims=space.idxify(["reward"]),
-            )
-        self.r = torch.zeros(self.m, device=self.device)
-        self.var = torch.zeros(self.m, device=self.device)
-        self.history = {} # History of tree modifications
-
-    @property
-    def m(self): return len(self.tree.leaves)
 
     def __call__(self, transitions):
         # NOTE: Awkward torch <-> numpy conversion
@@ -114,41 +101,59 @@ class RewardTree(RewardModel):
         std = torch.sqrt(var)
         return mu, var, std
 
+    @property
+    def tree(self): return self._tree
+    @tree.setter
+    def tree(self, tree):
+        self._tree = tree
+        if len(tree.root.sorted_indices) > 0:
+            self.r = torch.tensor(tree.gather(("mean","reward")), device=self.device).float()
+            self.var = torch.tensor(tree.gather(("var","reward")), device=self.device).float()
+        else:
+            self.r, self.var = torch.zeros(len(tree), device=self.device), torch.zeros(len(tree), device=self.device)
+
+    def create_empty_tree(self, name="reward_function"):
+        space = hr.Space(dim_names=self.featuriser.names+["ep", "reward"])
+        return hr.tree.Tree(name=name, root=hr.node.Node(space),
+            split_dims=space.idxify(self.featuriser.names),
+            eval_dims=space.idxify(["reward"]),
+        )
+
     def fitness(self, transitions):
         # https://www.statlect.com/probability-distributions/normal-distribution-linear-combinations
-        n = self.n(transitions)
+        n = self.n(self.tree, transitions)
         return n @ self.r, n @ torch.diag(self.var) @ n.T
 
     def update(self, graph, history_key, reset_tree=True):
 
-        num_repeats = 1
-        prune_ratio = 0.5
+        num_repeats = 5
+        prune_ratio = 0.9
         post_populate_with_all = False
 
-        for _ in range(num_repeats):
-            if reset_tree: self.tree.prune_to(self.tree.root)
+        assert reset_tree; trees = [self.create_empty_tree() for _ in range(num_repeats)]
+        histories = [{} for _ in range(num_repeats)]
+        for tree, history in zip(trees, histories):
             if prune_ratio is not None:
                 num_prune = int(round(len(graph.edges) * min(max(0, prune_ratio), 1)))
                 num_grow = len(graph.edges) - num_prune
                 if num_grow < 1 or num_prune < 1: return {}
                 grow_graph, prune_graph = graph.random_connected_subgraph(num_grow)
-                self.populate(grow_graph)
-                history_grow = self.grow()
-                if post_populate_with_all: self.populate(graph)
-                history_prune = self.prune(prune_graph)
+                self.populate(tree, grow_graph)
+                history["grow"] = self.grow(tree)
+                if post_populate_with_all: self.populate(tree, graph)
+                history["prune"] = self.prune(tree, prune_graph)
             else:
                 if len(graph.edges) < 1: return {}
                 self.populate(graph)
-                history_grow, history_prune = self.grow(), self.prune(graph)
+                history["grow"], history["prune"] = self.grow(tree), self.prune(tree, graph)
+            history["m"] = len(tree)
+            history["loss"] = [l for m,l,_ in history["prune"] if m == len(tree)][0]
+        i, loss = min([(i, h["loss"]) for i, h in enumerate(histories)], key=lambda x:x[1])
+        self.tree = trees[i]
+        self.history[history_key] = histories[i]
+        return {"preference_loss": loss, "num_leaves": len(self.tree)}
 
-            self.history[history_key] = {"grow": history_grow, "prune": history_prune, "m": self.m}
-            loss = [l for m,l,_ in self.history[history_key]["prune"] if m == self.m][0]
-            print(self.rules(self.tree, pred_dims="reward", sf=5))
-            print(loss)
-
-        return {"preference_loss": loss, "num_leaves": self.m}
-
-    def populate(self, graph):
+    def populate(self, tree, graph):
         """
         Populate tree with all episodes in a preference graph. Compute least squares fitness estimates
         for connected episodes, and apply uniform temporal prior to obtain reward targets.
@@ -157,74 +162,66 @@ class RewardTree(RewardModel):
         # NOTE: scaling by episode lengths (making ep fitness correspond to sum not mean) causes weird behaviour
         ep_lengths = [len(tr) for tr in transitions]
         reward_target, _, _ = least_squares_fitness(A, y, self.P["p_clip"], self.P["preference_eqn"]) # * np.mean(ep_lengths) / ep_lengths
-        # Populate tree. 
-        self.tree.space.data = np.hstack((
+        # Populate space, then the tree itself
+        tree.space.data = np.hstack((
             # NOTE: Using index in transition list rather than graph.nodes
             self.featuriser(torch.cat(transitions)).cpu().numpy(),
             np.vstack([[[i, r]] * l for i, (r, l) in enumerate(zip(reward_target, ep_lengths))]),
             ))
-        self.tree.populate()
-        self.compute_r_and_var()
-        return True
+        tree.populate()
 
-    def grow(self):
+    def grow(self, tree):
         """
-        Perform best-first splitting until m_max is reached.
+        Given a populated tree, perform best-first splitting until m_max is reached.
         """
         history = []
-        def add_to_history(): history.append([self.m, float("nan"), sum(self.tree.gather(("var_sum", "reward"))) / self.tree.root.num_samples])
+        def add_to_history(): history.append([len(tree), float("nan"), sum(tree.gather(("var_sum", "reward"))) / tree.root.num_samples])
         add_to_history()
-        with tqdm(total=self.P["m_max"], initial=self.m, desc="Splitting") as pbar:
-            while self.m < self.P["m_max"] and len(self.tree.split_queue) > 0:
-                node = self.tree.split_next_best(self.P["min_samples_leaf"], self.P["num_from_queue"], self.P["store_all_qual"])
+        with tqdm(total=self.P["m_max"], initial=len(tree), desc="Splitting") as pbar:
+            while len(tree) < self.P["m_max"] and len(tree.split_queue) > 0:
+                node = tree.split_next_best(self.P["min_samples_leaf"], self.P["num_from_queue"], self.P["store_all_qual"])
                 if node is not None: add_to_history(); pbar.update()
-        self.compute_r_and_var()
         return history
 
-    def prune(self, graph):
+    def prune(self, tree, graph):
         """
-        Recursively prune tree to minimise the (possibly-regularised) preference loss.
+        Recursively prune tree to minimise the (possibly-regularised) preference loss on the given graph.
         """
         transitions, _, i_list, j_list, y = graph.make_data_structures(unconnected_ok=True)
         y = y.cpu().numpy()
         history = []
-        def add_to_history(loss): history.append([self.m, loss, sum(self.tree.gather(("var_sum", "reward"))) / self.tree.root.num_samples])
-        tree_before_prune = self.tree.clone()
         prune_indices = []
-        mean, var = (np.array(attr) for attr in self.tree.gather(("mean","reward"), ("var","reward")))
-        counts = np.vstack([self.n(tr).cpu().numpy() for tr in transitions])
+        mean, var = (np.array(attr) for attr in tree.gather(("mean","reward"), ("var","reward")))
+        counts = np.vstack([self.n(tree, tr).cpu().numpy() for tr in transitions])
+        r_d = tree.space.idxify("reward")
+        subtree = tree.clone()
+        def add_to_history(loss): history.append([len(subtree), loss, sum(subtree.gather(("var_sum", "reward"))) / subtree.root.num_samples])
         add_to_history(preference_loss(mean, var, counts, i_list, j_list, y, self.P["preference_eqn"], self.P["loss_func"]))
-        with tqdm(total=self.P["m_max"], initial=self.m, desc="Pruning") as pbar:
-            while self.m > 1:
+        with tqdm(total=self.P["m_max"], initial=len(tree), desc="Pruning") as pbar:
+            while len(subtree) > 1:
                 prune_candidates = []
-                for i in range(self.m - 1):
-                    left, right = self.tree.leaves[i:i+2]
-                    if left.parent is right.parent:
-                        m = np.delete(mean,   i, axis=0); m[i] = left.parent.mean[-1] # NOTE: Assumes reward is dim -1
-                        v = np.delete(var,    i, axis=0); v[i] = left.parent.cov[-1,-1]
+                for i in range(len(subtree) - 1):
+                    left, right = subtree.leaves[i:i+2]
+                    if left.parent is right.parent: # i.e. the two leaves are siblings
+                        m = np.delete(mean,   i, axis=0); m[i] = left.parent.mean[r_d]
+                        v = np.delete(var,    i, axis=0); v[i] = left.parent.cov[r_d,r_d]
                         c = np.delete(counts, i, axis=1); c[:,i] = counts[:,i] + counts[:,i+1]
                         loss = preference_loss(m, v, c, i_list, j_list, y, self.P["preference_eqn"], self.P["loss_func"])
                         prune_candidates.append((i, m, v, c, loss))
                 x, mean, var, counts, loss = sorted(prune_candidates, key=lambda cand: cand[4])[0]
-                assert self.tree.prune_to(self.tree.leaves[x].parent) == {x, x+1}
+                assert subtree.prune_to(subtree.leaves[x].parent) == {x, x+1}
                 prune_indices.append(x); add_to_history(loss); pbar.update()
-        self.tree = tree_before_prune
         # NOTE: Using reversed list to ensure *last* occurrence returned
         optimum = (len(history)-1) - np.argmin([l + (self.P["alpha"] * m) for m,l,_ in reversed(history)])
         for x in prune_indices[:optimum]:
-            assert self.tree.prune_to(self.tree.leaves[x].parent) == {x, x+1}
-        self.compute_r_and_var()
+            assert tree.prune_to(tree.leaves[x].parent) == {x, x+1}
         return history
 
-    def n(self, transitions):
+    def n(self, tree, transitions):
         assert len(transitions.shape) == 2
-        n = torch.zeros(self.m, device=self.device)
-        for x in self.tree.get_leaf_nums(self.featuriser(transitions).cpu().numpy()): n[x] += 1
+        n = torch.zeros(len(tree), device=self.device)
+        for x in tree.get_leaf_nums(self.featuriser(transitions).cpu().numpy()): n[x] += 1
         return n
-
-    def compute_r_and_var(self):
-        self.r = torch.tensor(self.tree.gather(("mean","reward")), device=self.device).float()
-        self.var = torch.tensor(self.tree.gather(("var","reward")), device=self.device).float()
 
 # ==============================================================================
 # UTILITIES
