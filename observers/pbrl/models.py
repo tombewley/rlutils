@@ -125,22 +125,17 @@ class RewardTree(RewardModel):
         return n @ self.r, n @ torch.diag(self.var) @ n.T
 
     def update(self, graph, history_key, reset_tree=True):
-
-        num_repeats = 5
-        prune_ratio = 0.9
-        post_populate_with_all = False
-
-        assert reset_tree; trees = [self.create_empty_tree() for _ in range(num_repeats)]
-        histories = [{} for _ in range(num_repeats)]
+        assert reset_tree; trees = [self.create_empty_tree() for _ in range(self.P["trees_per_update"])]
+        histories = [{} for _ in range(self.P["trees_per_update"])]
         for tree, history in zip(trees, histories):
-            if prune_ratio is not None:
-                num_prune = int(round(len(graph.edges) * min(max(0, prune_ratio), 1)))
+            if self.P["prune_ratio"] is not None:
+                num_prune = int(round(len(graph.edges) * min(max(0, self.P["prune_ratio"]), 1)))
                 num_grow = len(graph.edges) - num_prune
                 if num_grow < 1 or num_prune < 1: return {}
                 grow_graph, prune_graph = graph.random_connected_subgraph(num_grow)
                 self.populate(tree, grow_graph)
                 history["grow"] = self.grow(tree)
-                if post_populate_with_all: self.populate(tree, graph)
+                if self.P["post_populate_with_all"]: self.populate(tree, graph)
                 history["prune"] = self.prune(tree, prune_graph)
             else:
                 if len(graph.edges) < 1: return {}
@@ -151,6 +146,11 @@ class RewardTree(RewardModel):
         i, loss = min([(i, h["loss"]) for i, h in enumerate(histories)], key=lambda x:x[1])
         self.tree = trees[i]
         self.history[history_key] = histories[i]
+
+        print([(_i, h["loss"]) for _i, h in enumerate(histories)])
+        print(i)
+        print(self.rules(self.tree, pred_dims="reward", sf=5))
+
         return {"preference_loss": loss, "num_leaves": len(self.tree)}
 
     def populate(self, tree, graph):
