@@ -45,11 +45,13 @@ class ReplayMemory:
         # Increment position, cycling back to the beginning if needed.
         self.position = (self.position + 1) % self.capacity
 
-    def relabel(self): 
-        print("Relabelling memory with latest reward...")
-        _, _, rewards, _, _ = self.sample(0, mode="relabel", keep_terminal_next=True) # NOTE: Slightly odd usage here.
-        for el, r in zip(self.memory, rewards): el[4] = r.unsqueeze(0) # NOTE: reward must be at index 4 of the namedtuple spec.
-        print("Done.")
+    def relabel(self):
+        l = len(self)
+        if l > 0:
+            print("Relabelling memory with latest reward...")
+            _, _, rewards, _, _ = self.sample(l, mode="relabel", keep_terminal_next=True) # NOTE: Slightly odd usage here.
+            for el, r in zip(self.memory, rewards): el[4] = r.unsqueeze(0) # NOTE: reward must be at index 4 of the namedtuple spec.
+            print("Done.")
 
     def sample(self, batch_size, mode="uniform", range=None, keep_terminal_next=False):
         """Retrieve a random sample of transitions and refactor.
