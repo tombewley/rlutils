@@ -110,17 +110,8 @@ class RewardTree(RewardModel):
     def __call__(self, transitions):
         # NOTE: Awkward torch <-> numpy conversion
         indices = torch.tensor(self.tree.get_leaf_nums(self.featuriser(transitions).cpu().numpy()))
-
-        # =========
-        # indices_old = self.features_to_indices(features)
-        # noteq = indices != indices_old
-        # if noteq.any():
-        #     print(features[noteq])
-        #     raise Exception()
-        # =========
-
         mu, var = self.r[indices], self.var[indices]
-        std = torch.sqrt(var)     
+        std = torch.sqrt(var)
         return mu, var, std
 
     def fitness(self, transitions):
@@ -224,11 +215,6 @@ class RewardTree(RewardModel):
             assert self.tree.prune_to(self.tree.leaves[x].parent) == {x, x+1}
         self.compute_r_and_var()
         return history
-
-    # def features_to_indices(self, features):
-    #     def get_index(f):
-    #         return self.tree.leaves.index(next(iter(self.tree.propagate(list(f)+[None,None], mode="max"))))
-    #     return np.apply_along_axis(get_index, -1, features.cpu().numpy())
 
     def n(self, transitions):
         assert len(transitions.shape) == 2
