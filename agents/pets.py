@@ -25,9 +25,10 @@ class PetsAgent(Agent):
         # Create dynamics model, optionally loading a pretrained ensemble of nets.
         if "pretrained_model" in self.P: nets, code, ensemble_size, probabilistic = self.P["pretrained_model"], None, None, None
         else: nets, code, ensemble_size, probabilistic = None, self.P["net_model"], self.P["ensemble_size"], self.P["probabilistic"]
+        term_func = self.P["termination"] if "termination" in self.P else None
         self.model = DynamicsModel(nets=nets, code=code, observation_space=self.env.observation_space, action_space=self.env.action_space,
-                                   reward_function=self.P["reward"], probabilistic=probabilistic, lr=self.P["lr_model"],
-                                   ensemble_size=ensemble_size, rollout_params=self.P["rollout"], device=self.device)
+                                   reward_function=self.P["reward"], termination_function=term_func, probabilistic=probabilistic,
+                                   lr=self.P["lr_model"], ensemble_size=ensemble_size, rollout_params=self.P["rollout"], device=self.device)
         # Action space bounds, needed for CEM.
         self.action_space_low = torch.tensor(self.env.action_space.low, device=self.device)
         self.action_space_high = torch.tensor(self.env.action_space.high, device=self.device)
@@ -123,7 +124,7 @@ class PetsAgent(Agent):
         """Operations to perform on each episode end during training."""
         logs = {"model_loss": mean(self.ep_losses) if self.ep_losses else 0., "random_mode": int(self.random_mode),
                 "next_action_std": mean(self.ep_action_stds) if self.ep_action_stds else 0.}
-        if self.P["rollout_review"] and self.total_t > self.P["num_random_steps"]: # NOTE: Ignores random memory.
+        if self.P["rollout_review"] and not self.random_mode: # NOTE: Ignores random memory.
             # Rollout the latest episode's action sequence from the initial state.
             states, actions, _, _, next_states = self.memory.sample(self.t, mode="latest", keep_terminal_next=True)
             if states is not None:

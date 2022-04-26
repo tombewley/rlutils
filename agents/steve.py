@@ -54,7 +54,7 @@ class SteveAgent(DdpgAgent):
                 states, actions, _, _, next_states = self.memory.sample(self.P["batch_size"], keep_terminal_next=True)
                 if states is None: return 
                 self.ep_losses_model.append(self.model.update_on_batch(states, actions, next_states, i))
-        # TODO: Skip terminal next_states?
+        # TODO: Verify that model.termination_function correctly screens out post-termination samples.
         # Sample another batch, this time for training pi and Q, using the model to obtain (hopefully) better Q_targets.
         states, actions, _, nonterminal_mask, next_states = self.memory.sample(self.P["batch_size"], keep_terminal_next=True)
         with torch.no_grad():

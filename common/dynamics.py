@@ -20,8 +20,9 @@ class DynamicsModel:
     """
     Optionally implements probabilistic dynamics using the reparameterisation trick.
     """
-    def __init__(self, observation_space, action_space, reward_function, lr, rollout_params, device, nets=None, code=None, ensemble_size=None, probabilistic=False):
+    def __init__(self, observation_space, action_space, reward_function, termination_function, lr, rollout_params, device, nets=None, code=None, ensemble_size=None, probabilistic=False):
         self.reward_function = reward_function
+        self.termination_function = termination_function
         self.probabilistic = probabilistic
         self.P = rollout_params
         assert type(action_space) == Box, "CEM doesn't work with discrete actions, and need one-hot encoding for model"
@@ -82,11 +83,17 @@ class DynamicsModel:
         else: raise ValueError("Must provide either policy or actions.")
         states      = torch.empty((num_particles, horizon+1, batch_size, states_init.shape[1]), device=states_init.device)
         rewards     = torch.zeros((num_particles, horizon,   batch_size                      ), device=states_init.device)
+        if self.termination_function is not None:
+            dones   = torch.zeros((num_particles,  horizon,   batch_size                     ), device=states_init.device, dtype=bool)
         states[:,0] = states_init
         for t in range(horizon):
             if using_policy: actions[:,t] = policy(states[:,t]) # If using a policy, action selection is closed-loop.
             states[:,t+1] = self.predict(states[:,t], actions[:,t], ensemble_index)
             rewards[:,t]  = self.reward_function(states[:,t], actions[:,t], states[:,t+1])
+            if self.termination_function is not None and t < (horizon-1):
+                dones[:,t+1] = self.termination_function(states[:,t], actions[:,t], states[:,t+1])
+        # Retroactively zero out post-termination rewards. NOTE: Simple but quite wasteful.
+        if self.termination_function is not None: rewards[torch.cumsum(dones, dim=1) > 0] = 0.
         return states, actions, rewards
 
     def update_on_batch(self, states, actions, next_states, ensemble_index):

@@ -59,6 +59,7 @@ class MbpoAgent(SacAgent):
                 states_init, _, _, _, _ = self.memory.sample(self.P["rollouts_per_update"])
                 # Simulate forward dynamics from states_init using randomly-sampled members of the ensemble,
                 # consulting pi for action selection. Save the resultant rollouts.
+                # TODO: Use model.termination_function to screen out post-termination samples.
                 self.rollouts.add(*self.model.rollout(states_init, policy=self.pi_no_logprob, ensemble_index="ts1"))
         # Uses batches sampled from model rollouts to update pi/Q.
         # Can perform more updates than normal here; use of model-generated data reduces overfitting risk.
