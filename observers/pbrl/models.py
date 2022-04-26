@@ -129,16 +129,32 @@ class RewardTree(RewardModel):
         return n @ self.r, n @ torch.diag(self.var) @ n.T
 
     def update(self, graph, history_key, reset_tree=True):
-        if len(graph.edges) < 2: return {}
-        if reset_tree: self.tree.prune_to(self.tree.root)
-        grow_graph, prune_graph = graph.random_connected_subgraph(1)
-        self.populate(grow_graph)
-        history_grow = self.grow()
-        self.populate(graph)
-        history_prune = self.prune(prune_graph)
-        self.history[history_key] = {"grow": history_grow, "prune": history_prune, "m": self.m}
-        loss = [l for m,l,_ in self.history[history_key]["prune"] if m == self.m][0]
-        print(self.rules(self.tree, pred_dims="reward", sf=5))
+
+        num_repeats = 1
+        prune_ratio = 0.5
+        post_populate_with_all = False
+
+        for _ in range(num_repeats):
+            if reset_tree: self.tree.prune_to(self.tree.root)
+            if prune_ratio is not None:
+                num_prune = int(round(len(graph.edges) * min(max(0, prune_ratio), 1)))
+                num_grow = len(graph.edges) - num_prune
+                if num_grow < 1 or num_prune < 1: return {}
+                grow_graph, prune_graph = graph.random_connected_subgraph(num_grow)
+                self.populate(grow_graph)
+                history_grow = self.grow()
+                if post_populate_with_all: self.populate(graph)
+                history_prune = self.prune(prune_graph)
+            else:
+                if len(graph.edges) < 1: return {}
+                self.populate(graph)
+                history_grow, history_prune = self.grow(), self.prune(graph)
+
+            self.history[history_key] = {"grow": history_grow, "prune": history_prune, "m": self.m}
+            loss = [l for m,l,_ in self.history[history_key]["prune"] if m == self.m][0]
+            print(self.rules(self.tree, pred_dims="reward", sf=5))
+            print(loss)
+
         return {"preference_loss": loss, "num_leaves": self.m}
 
     def populate(self, graph):
@@ -176,7 +192,7 @@ class RewardTree(RewardModel):
 
     def prune(self, graph):
         """
-        Recursively prune tree to minimise the *possibly-regularised) preference loss.
+        Recursively prune tree to minimise the (possibly-regularised) preference loss.
         """
         transitions, _, i_list, j_list, y = graph.make_data_structures(unconnected_ok=True)
         y = y.cpu().numpy()
