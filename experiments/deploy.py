@@ -102,7 +102,7 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers={}, run_id=
             if force_break: break
 
             state = agent.env.reset() # PbrlObserver requires env.reset() here due to video save behaviour.
-                    
+
             # Perform some agent- and observer-specific operations on each episode, which may create logs.
             logs = {"reward_sum": reward_sum}
             if train: logs.update(agent.per_episode())    
@@ -117,6 +117,7 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers={}, run_id=
                 agent.save(f"{save_dir}/{ep+1}")
 
         # Clean up.
+        if do_wandb: wandb.finish()
         if renderer: renderer.close()
         agent.env.close()
     agent.env = env_before_wrappers
