@@ -129,10 +129,22 @@ class RewardTree(RewardModel):
         histories = [{} for _ in range(self.P["trees_per_update"])]
         for tree, history in zip(trees, histories):
             if self.P["prune_ratio"] is not None:
-                num_prune = int(round(len(graph.edges) * min(max(0, self.P["prune_ratio"]), 1)))
-                num_grow = len(graph.edges) - num_prune
+
+                # num_prune = int(round(len(graph.edges) * min(max(0, self.P["prune_ratio"]), 1)))
+                # num_grow = len(graph.edges) - num_prune
+                num_prune = int(round(len(graph) * min(max(0, self.P["prune_ratio"]), 1)))
+                num_grow = len(graph) - num_prune
+
                 if num_grow < 1 or num_prune < 1: return {}
-                grow_graph, prune_graph = graph.random_connected_subgraph(num_grow)
+
+                # grow_graph, prune_graph = graph.random_connected_subgraph(num_grow)
+                grow_graph, prune_graph = graph.random_nodewise_connected_subgraph(num_grow, partitioned=True)
+
+                assert not (set(grow_graph.edges) & set(prune_graph.edges))
+                assert not (set(grow_graph.nodes) & set(prune_graph.nodes))
+                print(f"Grow graph: {len(grow_graph.edges)} preferences between {len(grow_graph)} episodes")
+                print(f"Prune graph: {len(prune_graph.edges)} preferences between {len(prune_graph)} episodes")
+
                 self.populate(tree, grow_graph)
                 history["grow"] = self.grow(tree)
                 if self.P["post_populate_with_all"]: self.populate(tree, graph)
@@ -161,7 +173,9 @@ class RewardTree(RewardModel):
         transitions, A, _, _, y = graph.make_data_structures()
         # NOTE: scaling by episode lengths (making ep fitness correspond to sum not mean) causes weird behaviour
         ep_lengths = [len(tr) for tr in transitions]
-        reward_target, _, _ = least_squares_fitness(A, y, self.P["p_clip"], self.P["preference_eqn"]) # * np.mean(ep_lengths) / ep_lengths
+        print("Computing maximum likelihood fitness...")
+        reward_target, loss = maximum_likelihood_fitness(A, y, self.P["preference_eqn"]) # * np.mean(ep_lengths) / ep_lengths
+        print(f"Done (loss = {loss})")
         # Populate space, then the tree itself
         tree.space.data = np.hstack((
             # NOTE: Using index in transition list rather than graph.nodes
@@ -238,6 +252,26 @@ def least_squares_fitness(A, y, p_clip, preference_eqn="thurstone"):
     # f = np.linalg.lstsq((A.T @ A).cpu().numpy(), (A.T @ d).cpu().numpy(), rcond=None)[0]
     return (f - f.max()).cpu().numpy(), d, residuals # NOTE: Shift so that maximum fitness is zero (cost function)
 
+def maximum_likelihood_fitness(A, y, preference_eqn="thurstone", lr=0.1, epsilon=1e-5):
+    """
+    Construct maximum likelihood fitness estimates under the specified preference equation.
+    Normalise fitness to be negative on the training set, with unit standard deviation.
+    https://apps.dtic.mil/sti/pdfs/ADA543806.pdf.
+    """
+    f = norm.sample((A.shape[1],)) # Initialise with samples from standard normal
+    f.requires_grad = True
+    opt = torch.optim.Adam([f], lr=lr)
+    loss = float("inf")
+    while True:
+        if preference_eqn == "thurstone": y_pred = norm.cdf(A @ f)
+        elif preference_eqn == "bradley-terry": raise NotImplementedError()
+        new_loss = bce_loss(y_pred, y)
+        new_loss.backward()
+        opt.step()
+        if torch.abs(new_loss - loss) < epsilon: break
+        loss = new_loss; opt.zero_grad()
+    return ((f - f.max()) / f.std()).detach().cpu().numpy(), new_loss
+
 def preference_loss(mean, var, counts, i_list, j_list, y, preference_eqn="thurstone", loss_func="bce"):
     """
     Compute preference loss given vectors of per-component means and variances,
@@ -262,4 +296,5 @@ def preference_loss(mean, var, counts, i_list, j_list, y, preference_eqn="thurst
         y_pred_sign = np.sign(y_pred_shift) * (np.abs(y_pred_shift) > 0.1)
         loss = np.abs(y_sign - y_pred_sign).mean()
     assert not np.isnan(loss)
+    # if np.isinf(loss): print("WARNING: infinite loss")
     return loss

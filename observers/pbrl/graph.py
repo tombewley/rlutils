@@ -48,8 +48,7 @@ class PreferenceGraph:
         """
         Starting with the preference graph, assemble data structures needed for model updates.
         """
-        connected_subgraph = self.subgraph(self._graph.edges) # Remove unconnected episodes
-        print(f"Connected episodes: {len(connected_subgraph)} / {len(self)}")
+        connected_subgraph = self.subgraph(edges=self._graph.edges) # Remove unconnected episodes
         if not(unconnected_ok) and len(connected_subgraph) > 0:
             assert nx.is_weakly_connected(connected_subgraph._graph), "Morrissey-Gulliksen requires a connected graph."
         connected = sorted(connected_subgraph.nodes)
@@ -109,9 +108,9 @@ class PreferenceGraph:
 # ==============================================================================
 # SUBGRAPH EXTRACTION
 
-    def subgraph(self, edges):
+    def subgraph(self, nodes=None, edges=None):
         sg = PreferenceGraph(device=self.device)
-        sg._graph = self._graph.edge_subgraph(edges)
+        sg._graph = self._graph.subgraph(nodes) if nodes is not None else self._graph.edge_subgraph(edges)
         return sg
 
     def rewind_subgraph(self, history_key):
@@ -119,7 +118,7 @@ class PreferenceGraph:
         Create a frozen subgraph containing all preferences added before history_key.
         """
         if history_key is None: return self
-        return self.subgraph((i,j) for i,j,d in self._graph.edges(data=True) if d["history_key"] <= history_key)
+        return self.subgraph(edges=[(i,j) for i,j,d in self._graph.edges(data=True) if d["history_key"] <= history_key])
 
     def random_connected_subgraph(self, num_edges):
         """
@@ -135,7 +134,29 @@ class PreferenceGraph:
             edge_queue.remove(edge); edges.add(edge)
             for node in edge:
                 if node not in nodes:
+                    nodes.add(node)
                     edge_queue.update((set(self._graph.in_edges(node)) |
                                        set(self._graph.out_edges(node))) - {edge})
+        return self.subgraph(edges=edges), self.subgraph(edges=[e for e in self.edges if e not in edges])
+
+    def random_nodewise_connected_subgraph(self, num_nodes, partitioned):
+        """
+        Create a frozen connected subgraph with a specified number of episodes.
+        Adapted from pseudocode in https://stackoverflow.com/a/64814482/.
+        TODO: Different selection strategies (e.g. prioritise pairs already in subgraph to increase density).
+        """
+        node = self.rng.choice([node for node in self.nodes if self._graph.degree(node) > 0]) # Random seed node
+        edge_queue = set(self._graph.in_edges(node)) | set(self._graph.out_edges(node))
+        nodes = set()
+        while len(nodes) < num_nodes:
+            edge = tuple(self.rng.choice(tuple(edge_queue))) # Random connected edge
+            edge_queue.remove(edge)
+            for node in edge:
+                if node not in nodes:
                     nodes.add(node)
-        return self.subgraph(edges), self.subgraph([e for e in self.edges if e not in edges])
+                    edge_queue.update((set(self._graph.in_edges(node)) |
+                                       set(self._graph.out_edges(node))) - {edge})
+        sg_a = self.subgraph(nodes=nodes)
+        if partitioned: sg_b = self.subgraph(nodes=[n for n in self.nodes if n not in sg_a.nodes])
+        else:           sg_b = self.subgraph(edges=[e for e in self.edges if e not in sg_a.edges])
+        return sg_a, sg_b
