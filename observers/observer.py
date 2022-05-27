@@ -16,8 +16,8 @@ class Observer:
     """
     Class for collecting observational data from an agent and its environment during deployment.
     """
-    def __init__(self, P, state_dims, action_dims, do_next_state=False, do_info=False, do_extra=False):
-        self.P, self.do_next_state, self.do_info, self.do_extra = P, do_next_state, do_info, do_extra
+    def __init__(self, P, state_dims, action_dims, do_next_state=False, do_info=False, do_extra=False, save_path="observations"):
+        self.P, self.do_next_state, self.do_info, self.do_extra, self.save_path = P, do_next_state, do_info, do_extra, save_path
         # If state_dims or action_dims are integers, use default names.
         if type(state_dims) is int:  state_dims = [f"s_{i}" for i in range(state_dims)] if state_dims > 1 else ["s"]
         if type(action_dims) is int: action_dims = [f"a_{i}" for i in range(action_dims)] if action_dims > 1 else ["a"]
@@ -118,4 +118,4 @@ class Observer:
         return df
 
     def save(self): 
-        self.dataframe().to_csv(f"observations/{self.run_names[-1]}.csv")
+        self.dataframe().to_csv(f"{self.save_path}/{self.run_names[-1]}.csv")

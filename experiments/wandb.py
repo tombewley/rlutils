@@ -6,6 +6,7 @@ from pandas import DataFrame
 
 def get(project_name, metrics, filters=None, tag=None):
     data = [{"run_names": [], "metrics": []} for _ in filters]
+    # TODO: Can apply filters directly to api.runs
     for run in tqdm(wandb.Api().runs(project_name)):
         if tag is None or tag in run.tags:
             config = run.config; config.update({"name": run.name})
