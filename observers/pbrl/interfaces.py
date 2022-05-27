@@ -1,3 +1,4 @@
+from numpy import concatenate
 from numpy.random import default_rng
 from scipy.stats import norm
 
@@ -16,39 +17,41 @@ class Interface:
 
 
 class VideoInterface(Interface):
+
+    import os, cv2 # Lazy import
+
     def __init__(self, pbrl, P):
         Interface.__init__(self, pbrl)
-        import cv2 # Lazy import
         self.mapping = {81: 1., 83: 0., 32: 0.5, 27: "esc"}
 
     def __enter__(self):
         self.videos = []
         for rn in self.pbrl.run_names:
-            run_videos = sorted([f"video/{rn}/{f}" for f in os.listdir(f"video/{rn}") if ".mp4" in f])
+            run_videos = sorted([f"video/{rn}/{f}" for f in self.os.listdir(f"video/{rn}") if ".mp4" in f])
             assert [int(v[-10:-4]) for v in run_videos] == list(range(len(run_videos)))
             self.videos += run_videos
-        if len(self.videos) != len(self.pbrl.episodes): 
-            assert len(self.videos) == len(self.pbrl.episodes) + 1
+        if len(self.videos) != len(self.pbrl.graph):
+            assert len(self.videos) == len(self.pbrl.graph) + 1
             print("Partial video found; ignoring.")                
-        cv2.startWindowThread()
-        cv2.namedWindow("Trajectory Pairs", cv2.WINDOW_NORMAL)
-        cv2.resizeWindow("Trajectory Pairs", 1000, 500)
+        self.cv2.startWindowThread()
+        self.cv2.namedWindow("Trajectory Pairs", self.cv2.WINDOW_NORMAL)
+        self.cv2.resizeWindow("Trajectory Pairs", 1000, 500)
 
     def __exit__(self, exc_type, exc_value, traceback): 
-        cv2.destroyAllWindows()
+        self.cv2.destroyAllWindows()
 
     def __call__(self, i, j):
-        vid_i = cv2.VideoCapture(self.videos[i])
-        vid_j = cv2.VideoCapture(self.videos[j])
+        vid_i = self.cv2.VideoCapture(self.videos[i])
+        vid_j = self.cv2.VideoCapture(self.videos[j])
         while True:
             ret, frame1 = vid_i.read()
-            if not ret: vid_i.set(cv2.CAP_PROP_POS_FRAMES, 0); _, frame1 = vid_i.read() # Will get ret = False at the end of the video, so reset.
+            if not ret: vid_i.set(self.cv2.CAP_PROP_POS_FRAMES, 0); _, frame1 = vid_i.read() # Will get ret = False at the end of the video, so reset.
             ret, frame2 = vid_j.read()
-            if not ret: vid_j.set(cv2.CAP_PROP_POS_FRAMES, 0); _, frame2 = vid_j.read()
+            if not ret: vid_j.set(self.cv2.CAP_PROP_POS_FRAMES, 0); _, frame2 = vid_j.read()
             if frame1 is None or frame2 is None: raise Exception("Video saving not finished!") 
-            cv2.imshow("Trajectory Pairs", np.concatenate((frame1, frame2), axis=1))
-            cv2.setWindowProperty("Trajectory Pairs", cv2.WND_PROP_TOPMOST, 1)
-            key = cv2.waitKey(10) & 0xFF # https://stackoverflow.com/questions/35372700/whats-0xff-for-in-cv2-waitkey1.                        
+            self.cv2.imshow("Trajectory Pairs", concatenate((frame1, frame2), axis=1))
+            self.cv2.setWindowProperty("Trajectory Pairs", self.cv2.WND_PROP_TOPMOST, 1)
+            key = self.cv2.waitKey(10) & 0xFF # https://stackoverflow.com/questions/35372700/whats-0xff-for-in-cv2-waitkey1.
             if key in self.mapping: break
         vid_i.release(); vid_j.release()
         return self.mapping[key]
