@@ -52,7 +52,7 @@ class PbrlObserver:
         Reward function, defined over individual transitions (s,a,s').
         """
         assert self.P["reward_source"] != "extrinsic", "This shouldn't have been called. Unwanted call to pbrl.link(agent)?"
-        if "discrete_action_map" in self.P: actions = [self.P["discrete_action_map"][a] for a in actions] 
+        if len(actions.shape) == 1: actions = torch.tensor([self.P["discrete_action_map"][a] for a in actions], device=self.device)
         transitions = torch.cat([states, actions, next_states], dim=-1)
         if self.P["reward_source"] == "oracle":
             assert not return_params, "Oracle doesn't use normal distribution parameters"
@@ -69,7 +69,7 @@ class PbrlObserver:
         """
         Store transition for current timestep.
         """
-        if "discrete_action_map" in self.P: action = self.P["discrete_action_map"][action]
+        if isinstance(action, int): action = self.P["discrete_action_map"][action]
         self._current_ep.append(list(state) + list(action) + list(next_state)) # TODO: Keep (s,a,s') separate when store in graph
             
     def per_episode(self, ep_num):

@@ -130,31 +130,40 @@ class RewardTree(RewardModel):
         for tree, history in zip(trees, histories):
             if self.P["prune_ratio"] is not None:
 
-                # num_prune = int(round(len(graph.edges) * min(max(0, self.P["prune_ratio"]), 1)))
-                # num_grow = len(graph.edges) - num_prune
-                num_prune = int(round(len(graph) * min(max(0, self.P["prune_ratio"]), 1)))
-                num_grow = len(graph) - num_prune
-
-                if num_grow < 1 or num_prune < 1: return {}
-
-                # grow_graph, prune_graph = graph.random_connected_subgraph(num_grow)
-                grow_graph, prune_graph = graph.random_nodewise_connected_subgraph(num_grow, partitioned=True)
-
+                if self.P["nodewise_partition"]:
+                    num_prune = int(round(len(graph) * min(max(0, self.P["prune_ratio"]), 1)))
+                    num_grow = len(graph) - num_prune
+                    if num_grow < 1 or num_prune < 1: return {}
+                    grow_graph, prune_graph, eval_graph = graph.random_nodewise_connected_subgraph(num_grow, partitioned=True)
+                    assert not (set(grow_graph.nodes) & set(prune_graph.nodes))
+                    assert set(grow_graph.edges) | set(prune_graph.edges) | set(eval_graph.edges) == set(graph.edges)
+                    if len(grow_graph.edges) < 1 or len(prune_graph.edges) < 1: return {}
+                else:
+                    num_prune = int(round(len(graph.edges) * min(max(0, self.P["prune_ratio"]), 1)))
+                    num_grow = len(graph.edges) - num_prune
+                    if num_grow < 1 or num_prune < 1: return {}
+                    grow_graph, prune_graph = graph.random_connected_subgraph(num_grow)
                 assert not (set(grow_graph.edges) & set(prune_graph.edges))
-                assert not (set(grow_graph.nodes) & set(prune_graph.nodes))
+
                 print(f"Grow graph: {len(grow_graph.edges)} preferences between {len(grow_graph)} episodes")
                 print(f"Prune graph: {len(prune_graph.edges)} preferences between {len(prune_graph)} episodes")
+                print(f"Eval graph: {len(eval_graph.edges)} preferences between {len(eval_graph)} episodes")
 
+                # Grow using the grow_graph
                 self.populate(tree, grow_graph)
                 history["grow"] = self.grow(tree)
                 if self.P["post_populate_with_all"]: self.populate(tree, graph)
-                history["prune"] = self.prune(tree, prune_graph)
+                # Prune using the prune_graph
+                history["prune"] = self.prune(tree, prune_graph)#, eval_graph)
+                # Evaluate using the eval_graph
+                history["loss"] = self.preference_loss(*self.make_loss_data_structures(tree, eval_graph))
             else:
                 if len(graph.edges) < 1: return {}
                 self.populate(tree, graph)
                 history["grow"], history["prune"] = self.grow(tree), self.prune(tree, graph)
+                history["loss"] = [l for m,l,_ in history["prune"] if m == len(tree)][0]
             history["m"] = len(tree)
-            history["loss"] = [l for m,l,_ in history["prune"] if m == len(tree)][0]
+
         i, loss = min([(i, h["loss"]) for i, h in enumerate(histories)], key=lambda x:x[1])
         self.tree = trees[i]
         self.history[history_key] = histories[i]
@@ -171,10 +180,11 @@ class RewardTree(RewardModel):
         for connected episodes, and apply uniform temporal prior to obtain reward targets.
         """
         transitions, A, _, _, y = graph.make_data_structures()
-        # NOTE: scaling by episode lengths (making ep fitness correspond to sum not mean) causes weird behaviour
-        ep_lengths = [len(tr) for tr in transitions]
+        ep_lengths = np.array([len(tr) for tr in transitions])
         print("Computing maximum likelihood fitness...")
-        reward_target, loss = maximum_likelihood_fitness(A, y, self.P["preference_eqn"]) # * np.mean(ep_lengths) / ep_lengths
+        f, loss = maximum_likelihood_fitness(A, y, self.P["preference_eqn"])
+        # NOTE: scaling by episode lengths (making ep fitness correspond to sum not mean) causes weird behaviour
+        reward_target = f / ep_lengths # * np.mean(ep_lengths) / ep_lengths
         print(f"Done (loss = {loss})")
         # Populate space, then the tree itself
         tree.space.data = np.hstack((
@@ -197,39 +207,79 @@ class RewardTree(RewardModel):
                 if node is not None: add_to_history(); pbar.update()
         return history
 
-    def prune(self, tree, graph):
+    def prune(self, tree, graph, eval_graph=None):
         """
         Recursively prune tree to minimise the (possibly-regularised) preference loss on the given graph.
+        Optionally use a second eval_graph to determine the stopping condition.
         """
-        transitions, _, i_list, j_list, y = graph.make_data_structures(unconnected_ok=True)
-        y = y.cpu().numpy()
+        mean, var, counts, i_list, j_list, y = self.make_loss_data_structures(tree, graph)
         history = []
         prune_indices = []
-        mean, var = (np.array(attr) for attr in tree.gather(("mean","reward"), ("var","reward")))
-        counts = np.vstack([self.n(tree, tr).cpu().numpy() for tr in transitions])
         r_d = tree.space.idxify("reward")
         subtree = tree.clone()
         def add_to_history(loss): history.append([len(subtree), loss, sum(subtree.gather(("var_sum", "reward"))) / subtree.root.num_samples])
-        add_to_history(preference_loss(mean, var, counts, i_list, j_list, y, self.P["preference_eqn"], self.P["loss_func"]))
-        with tqdm(total=self.P["m_max"], initial=len(tree), desc="Pruning") as pbar:
+        if eval_graph is not None:
+            _, _, eval_counts, eval_i_list, eval_j_list, eval_y = self.make_loss_data_structures(tree, eval_graph)
+            add_to_history(self.preference_loss(mean, var, eval_counts, eval_i_list, eval_j_list, eval_y))
+        else: add_to_history(self.preference_loss(mean, var, counts, i_list, j_list, y))
+        with tqdm(total=len(tree), initial=len(tree), desc="Pruning") as pbar:
             while len(subtree) > 1:
                 prune_candidates = []
-                for i in range(len(subtree) - 1):
-                    left, right = subtree.leaves[i:i+2]
+                for x in range(len(subtree) - 1):
+                    left, right = subtree.leaves[x:x+2]
                     if left.parent is right.parent: # i.e. the two leaves are siblings
-                        m = np.delete(mean,   i, axis=0); m[i] = left.parent.mean[r_d]
-                        v = np.delete(var,    i, axis=0); v[i] = left.parent.cov[r_d,r_d]
-                        c = np.delete(counts, i, axis=1); c[:,i] = counts[:,i] + counts[:,i+1]
-                        loss = preference_loss(m, v, c, i_list, j_list, y, self.P["preference_eqn"], self.P["loss_func"])
-                        prune_candidates.append((i, m, v, c, loss))
+                        m = np.delete(mean,   x, axis=0); m[x] = left.parent.mean[r_d]
+                        v = np.delete(var,    x, axis=0); v[x] = left.parent.cov[r_d,r_d]
+                        c = np.delete(counts, x, axis=1); c[:,x] = counts[:,x] + counts[:,x+1]
+                        loss = self.preference_loss(m, v, c, i_list, j_list, y)
+                        prune_candidates.append((x, m, v, c, loss))
                 x, mean, var, counts, loss = sorted(prune_candidates, key=lambda cand: cand[4])[0]
                 assert subtree.prune_to(subtree.leaves[x].parent) == {x, x+1}
-                prune_indices.append(x); add_to_history(loss); pbar.update()
+                if eval_graph is not None:
+                    eval_counts[:,x] += eval_counts[:,x+1]; eval_counts = np.delete(eval_counts, x+1, axis=1)
+                    loss = self.preference_loss(mean, var, eval_counts, eval_i_list, eval_j_list, eval_y)
+                prune_indices.append(x); add_to_history(loss); pbar.update(-1)
         # NOTE: Using reversed list to ensure *last* occurrence returned
         optimum = (len(history)-1) - np.argmin([l + (self.P["alpha"] * m) for m,l,_ in reversed(history)])
         for x in prune_indices[:optimum]:
             assert tree.prune_to(tree.leaves[x].parent) == {x, x+1}
+        assert len(tree) == history[optimum][0]
         return history
+
+    def make_loss_data_structures(self, tree, graph):
+        transitions, _, i_list, j_list, y = graph.make_data_structures(unconnected_ok=True)
+        mean, var = (np.array(attr) for attr in tree.gather(("mean","reward"), ("var","reward")))
+        counts = np.vstack([self.n(tree, tr).cpu().numpy() for tr in transitions])
+        y = y.cpu().numpy()
+        return mean, var, counts, i_list, j_list, y
+
+    def preference_loss(self, mean, var, counts, i_list, j_list, y):
+        """
+        Compute preference loss given vectors of per-component means and variances,
+        and a matrix of counts for each episode-component pair.
+        """
+        assert len(mean.shape) == len(var.shape) == 1 and len(counts.shape) == 2
+        assert mean.shape[0] == var.shape[0] == counts.shape[1]
+        i_counts, j_counts = counts[i_list], counts[j_list]
+        pair_diff = (mean * (i_counts - j_counts)).sum(axis=1)
+        if self.P["preference_eqn"] == "thurstone":
+            pair_var = (var * (i_counts**2 + j_counts**2)).sum(axis=1)
+            pair_var[np.logical_and(pair_diff == 0, pair_var == 0)] = 1 # Handle 0/0 case
+            y_pred = norm_s.cdf(pair_diff / np.sqrt(pair_var)) # Div/0 is fine
+        elif self.P["preference_eqn"] == "bradley-terry":
+            y_pred = 1 / (1 + np.exp(-pair_diff))
+        if self.P["loss_func"] == "bce":
+            # Robust binary cross-entropy loss (https://stackoverflow.com/a/50024648)
+            loss = (-(xlogy(y, y_pred) + xlog1py(1 - y, -y_pred))).mean()
+        elif self.P["loss_func"] == "0-1":
+            # Modified 0-1 loss with a central band reserved for "equal" class
+            y_shift, y_pred_shift = y - 0.5, y_pred - 0.5
+            y_sign =      np.sign(y_shift)      * (np.abs(y_shift) > 0.1)
+            y_pred_sign = np.sign(y_pred_shift) * (np.abs(y_pred_shift) > 0.1)
+            loss = np.abs(y_sign - y_pred_sign).mean()
+        assert not np.isnan(loss)
+        assert not np.isinf(loss)
+        return loss
 
     def n(self, tree, transitions):
         assert len(transitions.shape) == 2
@@ -263,38 +313,12 @@ def maximum_likelihood_fitness(A, y, preference_eqn="thurstone", lr=0.1, epsilon
     opt = torch.optim.Adam([f], lr=lr)
     loss = float("inf")
     while True:
-        if preference_eqn == "thurstone": y_pred = norm.cdf(A @ f)
-        elif preference_eqn == "bradley-terry": raise NotImplementedError()
+        pair_diff = A @ f
+        if preference_eqn == "thurstone": y_pred = norm.cdf(pair_diff)
+        elif preference_eqn == "bradley-terry": y_pred = 1 / (1 + torch.exp(-pair_diff))
         new_loss = bce_loss(y_pred, y)
         new_loss.backward()
         opt.step()
         if torch.abs(new_loss - loss) < epsilon: break
         loss = new_loss; opt.zero_grad()
     return ((f - f.max()) / f.std()).detach().cpu().numpy(), new_loss
-
-def preference_loss(mean, var, counts, i_list, j_list, y, preference_eqn="thurstone", loss_func="bce"):
-    """
-    Compute preference loss given vectors of per-component means and variances,
-    and a matrix of counts for each episode-component pair.
-    """
-    assert len(mean.shape) == len(var.shape) == 1 and len(counts.shape) == 2
-    assert mean.shape[0] == var.shape[0] == counts.shape[1]
-    i_counts, j_counts = counts[i_list], counts[j_list]
-    pair_diff = (mean * (i_counts - j_counts)).sum(axis=1)
-    pair_var = (var * (i_counts**2 + j_counts**2)).sum(axis=1)
-    pair_var[np.logical_and(pair_diff == 0, pair_var == 0)] = 1 # Handle 0/0 case
-    if preference_eqn == "thurstone":
-        y_pred = norm_s.cdf(pair_diff / np.sqrt(pair_var)) # Div/0 is fine
-    elif preference_eqn == "bradley-terry": raise NotImplementedError()
-    if loss_func == "bce":
-        # Robust binary cross-entropy loss (https://stackoverflow.com/a/50024648)
-        loss = (-(xlogy(y, y_pred) + xlog1py(1 - y, -y_pred))).mean()
-    elif loss_func == "0-1":
-        # Modified 0-1 loss with a central band reserved for "equal" class
-        y_shift, y_pred_shift = y - 0.5, y_pred - 0.5
-        y_sign =      np.sign(y_shift)      * (np.abs(y_shift) > 0.1)
-        y_pred_sign = np.sign(y_pred_shift) * (np.abs(y_pred_shift) > 0.1)
-        loss = np.abs(y_sign - y_pred_sign).mean()
-    assert not np.isnan(loss)
-    # if np.isinf(loss): print("WARNING: infinite loss")
-    return loss

@@ -128,7 +128,7 @@ class PreferenceGraph:
         """
         node = self.rng.choice([node for node in self.nodes if self._graph.degree(node) > 0]) # Random seed node
         edge_queue = set(self._graph.in_edges(node)) | set(self._graph.out_edges(node))
-        nodes, edges = set(), set()
+        nodes, edges = {node}, set()
         for _ in range(num_edges):
             edge = tuple(self.rng.choice(tuple(edge_queue))) # Random connected edge
             edge_queue.remove(edge); edges.add(edge)
@@ -147,7 +147,7 @@ class PreferenceGraph:
         """
         node = self.rng.choice([node for node in self.nodes if self._graph.degree(node) > 0]) # Random seed node
         edge_queue = set(self._graph.in_edges(node)) | set(self._graph.out_edges(node))
-        nodes = set()
+        nodes = {node}
         while len(nodes) < num_nodes:
             edge = tuple(self.rng.choice(tuple(edge_queue))) # Random connected edge
             edge_queue.remove(edge)
@@ -157,6 +157,8 @@ class PreferenceGraph:
                     edge_queue.update((set(self._graph.in_edges(node)) |
                                        set(self._graph.out_edges(node))) - {edge})
         sg_a = self.subgraph(nodes=nodes)
-        if partitioned: sg_b = self.subgraph(nodes=[n for n in self.nodes if n not in sg_a.nodes])
-        else:           sg_b = self.subgraph(edges=[e for e in self.edges if e not in sg_a.edges])
-        return sg_a, sg_b
+        if partitioned:
+            sg_b = self.subgraph(nodes=[n for n in self.nodes if n not in sg_a.nodes])
+            sg_c = self.subgraph(edges=(set(self.edges) - (set(sg_a.edges) | set(sg_b.edges))))
+        else: raise NotImplementedError; sg_b = self.subgraph(edges=[e for e in self.edges if e not in sg_a.edges])
+        return sg_a, sg_b, sg_c

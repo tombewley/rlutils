@@ -1,10 +1,12 @@
+from .models import maximum_likelihood_fitness, least_squares_fitness
+
+from hyperrectangles.visualise import show_rectangles, show_samples
 import os
 import numpy as np
 from torch import no_grad, cat
 from scipy.stats import norm
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
-import networkx as nx
 
 
 class Explainer:
@@ -22,23 +24,6 @@ class Explainer:
             if made and self.P["save"]: plt.savefig(f"{path}/{plot}_{history_key}.png")
         if self.P["show"]: self.show()
         plt.close("all")
-
-        # if history_key in self.pbrl.model.history: # TODO: Hacky
-        #     if "tree_diagram" in self.P["plots"]: 
-        #         self.pbrl.model.diagram(self.pbrl.model.tree, pred_dims=["reward"], verbose=True, out_name=f"{path}/tree_{history_key}", out_as="png")
-        #     if "tree_py" in self.P["plots"]: 
-        #         self.pbrl.model.rules(self.pbrl.model.tree, pred_dims="reward", sf=None, out_name=f"{path}/tree_{history_key}.py")
-        #     if "tree_rectangles" in self.P["plots"]:
-        #         for vis_dims, vis_lims in self.P["plots"]["tree_rectangles"]:
-        #             cmap_lims = (self.pbrl.model.r.min().item(), self.pbrl.model.r.max().item())
-        #             _, (ax1, ax2) = plt.subplots(1, 2, figsize=(24,8))
-        #             self.pbrl.model.rectangles(self.pbrl.model.tree, vis_dims, attribute=("mean", "reward"), vis_lims=vis_lims, cmap_lims=cmap_lims, maximise=True, ax=ax1)
-        #             # hr.show_leaf_numbers(self.tree, vis_dims, ax=ax1)
-        #             self.pbrl.model.rectangles(self.pbrl.model.tree, vis_dims, attribute=("std", "reward"), vis_lims=vis_lims, maximise=True, ax=ax2)
-        #             # hr.show_leaf_numbers(self.tree, vis_dims, ax=ax2)
-        #             if False: # Overlay samples
-        #                 hr.show_samples(self.tree.root, vis_dims=vis_dims, colour_dim="reward", ax=ax1, cmap_lims=cmap_lims, cbar=False)
-        #             plt.savefig(f"{path}/{vis_dims}_{history_key}.png")
 
     def show(self): plt.show()
 
@@ -100,41 +85,36 @@ class Explainer:
         plt.imshow(pdfs.T, aspect="auto", origin="lower", extent=[-0.5, len(mu)-0.5, mn, mx], interpolation="None")
         # for i, m in enumerate(mu): plt.scatter(i, m, c="w")
         plt.xticks(range(len(mu)), fontsize=6)
-    
-    def plot_alignment(self, history_key, vs="oracle", ax=None, fill_std=False):
-        """Decomposed fitness (+/- 1 std) vs a baseline, either:
-            - Case V fitness, or
-            - Ground truth fitness if an oracle is available    
-        """
-        if vs == "case_v": 
-            raise NotImplementedError()
-            baseline, xlabel = self.pbrl.model._ep_fitness_cv, "Case V Fitness"
-            ranking = [self.model._connected[i] for i in np.argsort(baseline)]
-        elif vs == "oracle":
-            assert self.pbrl.interface.oracle is not None
-            baseline = np.array([self.pbrl.interface.oracle(ep["transitions"]).sum().item() for _, ep in self.pbrl.graph.nodes(data=True)])
-            xlabel = "Oracle Fitness"
-            ranking = np.argsort(baseline)
-        with no_grad(): mu, var = np.array([self.pbrl.fitness(self.pbrl.graph.nodes[i]["transitions"]) for i in ranking]).T
-        if ax is None: _, ax = plt.subplots()
-        baseline_sorted = baseline[ranking]
-        _, _, _, _, connected = self.pbrl.construct_A_and_y(); connected = set(connected)
-        ax.scatter(baseline_sorted, mu, s=3, c=["k" if i in connected else "r" for i in ranking])
-        if fill_std:
-            std = np.sqrt(var)
-            ax.fill_between(baseline_sorted, mu-std, mu+std, color=[.8,.8,.8], zorder=-1, lw=0)
-        ax.set_xlabel(xlabel); ax.set_ylabel("Predicted Fitness")
-        if False and vs == "oracle":
-            baseline_conn, case_v_conn = [], []
-            for i in ranking:
-                try:
-                    c_i = self.pbrl.model._connected.index(i)
-                    baseline_conn.append(baseline[i]); case_v_conn.append(self.pbrl.model._ep_fitness_cv[c_i])
-                except: continue
-            ax2 = ax.twinx()
-            ax2.scatter(baseline_conn, case_v_conn, s=3, c="b")
-            ax2.set_ylabel("Case V Fitness Fitness")
-            ax2.yaxis.label.set_color("b")
+
+    def plot_alignment(self, history_key, fill_std=False):
+        """Scatter plots of oracle vs model returns and rewards."""
+        _, axes = plt.subplots(1, 3, figsize=(18, 4))
+        _, A, i_list, j_list, y = self.pbrl.graph.make_data_structures()
+        connected = set(i_list) | set(j_list)
+        with no_grad():
+            rewards = [cat([
+                self.pbrl.interface.oracle(ep["transitions"]).unsqueeze(1),
+                self.pbrl.model(ep["transitions"])[0].unsqueeze(1)
+                ], dim=1)
+                for _, ep in self.pbrl.graph.nodes(data=True)
+            ]
+            returns = cat([r.sum(dim=0).unsqueeze(0) for r in rewards], dim=0)
+            rewards = cat(rewards)
+        if len(A):
+            # Oracle vs trajectory-level return
+            traj_level_returns = maximum_likelihood_fitness(A, y, self.pbrl.model.P["preference_eqn"])[0]
+            connected_oracle_returns = [returns[i,0] for i in sorted(connected)]
+            axes[0].scatter(connected_oracle_returns, traj_level_returns, s=3, c="k")
+            axes[0].set_xlabel("Oracle Return"); axes[0].set_ylabel("Trajectory-level Return")
+            # traj_level_returns_old = least_squares_fitness(A, y, 0.1, self.pbrl.model.P["preference_eqn"])[0]
+            # axes[3].scatter(connected_oracle_returns, traj_level_returns_old, s=3, c="k")
+        # Oracle vs model return
+        axes[1].scatter(returns[:,0], returns[:,1], s=3, c=["k" if i in connected else "r" for i in range(len(returns))])
+        axes[1].set_xlabel("Oracle Return"); axes[1].set_ylabel("Model Return")
+        # Oracle vs model reward
+        axes[2].scatter(rewards[:,0], rewards[:,1], s=3, c="k", alpha=0.2)
+        axes[2].set_xlabel("Oracle Reward"); axes[2].set_ylabel("Model Reward")
+        return True
 
     def plot_leaf_visitation(self, history_key=None):
         """Heatmap representation of per-episode leaf visitation."""
@@ -145,6 +125,14 @@ class Explainer:
 
     def plot_preference_graph(self, history_key=None, figsize=(12, 12)):
         raise NotImplementedError("Use self.pbrl.graph.show()")
+
+    def plot_rectangles(self, history_key):
+        if self.pbrl.model.tree.root.num_samples == 0: return False
+        reward_targets = self.pbrl.model.tree.space.data[:,self.pbrl.model.tree.space.idxify("reward")]
+        cmap_lims = (reward_targets.min(), reward_targets.max())
+        ax = show_rectangles(self.pbrl.model.tree, [0, 1], attribute=("mean", "reward"), cmap_lims=cmap_lims, maximise=True)
+        show_samples(self.pbrl.model.tree.root, [0, 1], colour_dim="reward", ax=ax, cmap_lims=cmap_lims, cbar=False)
+        return True
 
 # ==============================================================================
 # VISUAL (LOCAL)
@@ -165,10 +153,9 @@ class Explainer:
         plt.plot([min(other_ep_num), max(other_ep_num)], [f[connected.index(ep_num)]]*2)
 
     def explain_split(self, node, ep_wise=False):
-        import hyperrectangles as hr
         d = node.space.idxify("reward", "ep")
         if ep_wise: d.reverse()
-        hr.show_samples(node, vis_dims=[node.split_dim, d[0]], colour_dim=d[1])
+        show_samples(node, vis_dims=[node.split_dim, d[0]], colour_dim=d[1])
         plt.plot([node.split_threshold]*2, node.bb_min[d[0]], c="k")
 
 # ==============================================================================
