@@ -1,7 +1,8 @@
+from numpy import corrcoef
 from .graph import PreferenceGraph
 from .sampler import Sampler
 from .explainer import Explainer
-from .interactions import preference_batch
+from .interactions import preference_batch, oracle_vs_model_on_graph
 
 import os
 import torch
@@ -117,6 +118,11 @@ class PbrlObserver:
                     graph=self.graph,
                     history_key=(ep_num+1)
                 ))
+                # If using oracle, measure alignment
+                if self.interface.oracle is not None:
+                    rewards, returns = oracle_vs_model_on_graph(self.interface.oracle, self.model, self.graph)
+                    logs["reward_correlation"] = torch.corrcoef(rewards.T)[0,1].item()
+                    logs["return_correlation"] = torch.corrcoef(returns.T)[0,1].item()
                 self.relabel_memory() # If applicable, relabel the agent's replay memory using the updated reward
                 self._batch_num += 1 
                 self._n_on_prev_batch = len(self.graph)

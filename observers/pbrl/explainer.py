@@ -1,4 +1,5 @@
 from .models import maximum_likelihood_fitness, least_squares_fitness
+from .interactions import oracle_vs_model_on_graph
 
 from hyperrectangles.visualise import show_rectangles, show_samples
 import os
@@ -91,15 +92,7 @@ class Explainer:
         _, axes = plt.subplots(1, 3, figsize=(18, 4))
         _, A, i_list, j_list, y = self.pbrl.graph.make_data_structures()
         connected = set(i_list) | set(j_list)
-        with no_grad():
-            rewards = [cat([
-                self.pbrl.interface.oracle(ep["transitions"]).unsqueeze(1),
-                self.pbrl.model(ep["transitions"])[0].unsqueeze(1)
-                ], dim=1)
-                for _, ep in self.pbrl.graph.nodes(data=True)
-            ]
-            returns = cat([r.sum(dim=0).unsqueeze(0) for r in rewards], dim=0)
-            rewards = cat(rewards)
+        rewards, returns = oracle_vs_model_on_graph(self.pbrl.interface.oracle, self.pbrl.model, self.pbrl.graph)
         if len(A):
             # Oracle vs trajectory-level return
             traj_level_returns = maximum_likelihood_fitness(A, y, self.pbrl.model.P["preference_eqn"])[0]
