@@ -21,7 +21,7 @@ class RewardModel:
     def __init__(self, P):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.P = P
-        self.featuriser = Featuriser(self.P["featuriser"]) if "featuriser" in self.P else None
+        self.featuriser = Featuriser(self.P["featuriser"])
 
 
 class RewardNet:
@@ -88,7 +88,7 @@ class RewardNet:
 class RewardTree(RewardModel):
     def __init__(self, P):
         RewardModel.__init__(self, P)
-        self.tree = self.create_empty_tree()
+        self.tree = self.make_tree()
         self.history = {} # History of tree modifications
         # Bring in some convenient visualisation methods
         self.rules, self.diagram, self.rectangles, self.show_split_quality = \
@@ -106,18 +106,23 @@ class RewardTree(RewardModel):
     @tree.setter
     def tree(self, tree):
         self._tree = tree
-        if len(tree.root.sorted_indices) > 0:
-            self.r = torch.tensor(tree.gather(("mean","reward")), device=self.device).float()
-            self.var = torch.tensor(tree.gather(("var","reward")), device=self.device).float()
-        else:
-            self.r, self.var = torch.zeros(len(tree), device=self.device), torch.zeros(len(tree), device=self.device)
+        self.r = torch.tensor(tree.gather(("mean","reward")), device=self.device).float()
+        self.var = torch.tensor(tree.gather(("var","reward")), device=self.device).float()
+        self.r[torch.isnan(self.r)] = 0. # NOTE: Reward defaults to 0. in the absence of data.
+        assert not(torch.isnan(self.r).any() or torch.isnan(self.var).any())
 
-    def create_empty_tree(self, name="reward_function"):
+    def make_tree(self, seed_func=None, name="reward_function"):
         space = hr.Space(dim_names=self.featuriser.names+["ep", "reward"])
-        return hr.tree.Tree(name=name, root=hr.node.Node(space),
-            split_dims=space.idxify(self.featuriser.names),
-            eval_dims=space.idxify(["reward"]),
-        )
+        split_dims = space.idxify(self.featuriser.names)
+        r_d = space.idxify("reward")
+        if seed_func is not None:
+            tree = space.tree_from_func(name=name, func=seed_func)
+            tree.split_dims, tree.eval_dims = split_dims, [r_d]
+            # NOTE: Manually setting per-leaf reward predictions. Use with care!
+            for leaf in tree.leaves: leaf.mean[r_d] = leaf.meta["return"]
+            return tree
+        else: return hr.tree.Tree(name=name, root=hr.node.Node(space),
+                                  split_dims=split_dims, eval_dims=[r_d])
 
     def fitness(self, transitions):
         # https://www.statlect.com/probability-distributions/normal-distribution-linear-combinations
@@ -125,7 +130,7 @@ class RewardTree(RewardModel):
         return n @ self.r, n @ torch.diag(self.var) @ n.T
 
     def update(self, graph, history_key, reset_tree=True):
-        assert reset_tree; trees = [self.create_empty_tree() for _ in range(self.P["trees_per_update"])]
+        assert reset_tree; trees = [self.make_tree() for _ in range(self.P["trees_per_update"])]
         histories = [{} for _ in range(self.P["trees_per_update"])]
         # Set factor for scaling rewards
         self._current_scale_factor = np.mean([len(ep["transitions"]) for _, ep in graph.nodes(data=True)])
