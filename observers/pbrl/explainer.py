@@ -113,7 +113,7 @@ class Explainer:
         """Heatmap representation of per-episode leaf visitation."""
         plt.figure()
         visits = cat([self.pbrl.model.n(self.pbrl.featuriser(ep["transitions"])).int().unsqueeze(1)
-                      for _,ep in self.pbrl.graph.nodes(data=True)], dim=1)
+                      for _, ep in self.pbrl.graph.nodes(data=True)], dim=1)
         plt.imshow(visits.T, interpolation="none")
 
     def plot_preference_graph(self, history_key=None, figsize=(12, 12)):

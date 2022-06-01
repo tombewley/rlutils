@@ -127,6 +127,8 @@ class RewardTree(RewardModel):
     def update(self, graph, history_key, reset_tree=True):
         assert reset_tree; trees = [self.create_empty_tree() for _ in range(self.P["trees_per_update"])]
         histories = [{} for _ in range(self.P["trees_per_update"])]
+        # Set factor for scaling rewards
+        self._current_scale_factor = np.mean([len(ep["transitions"]) for _, ep in graph.nodes(data=True)])
         for tree, history in zip(trees, histories):
             if self.P["prune_ratio"] is not None:
 
@@ -143,6 +145,8 @@ class RewardTree(RewardModel):
                     num_grow = len(graph.edges) - num_prune
                     if num_grow < 1 or num_prune < 1: return {}
                     grow_graph, prune_graph = graph.random_connected_subgraph(num_grow)
+                    eval_graph = prune_graph # NOTE: eval_graph is the same as the prune graph
+                    assert set(grow_graph.edges) | set(prune_graph.edges) == set(graph.edges)
                 assert not (set(grow_graph.edges) & set(prune_graph.edges))
 
                 print(f"Grow graph: {len(grow_graph.edges)} preferences between {len(grow_graph)} episodes")
@@ -165,13 +169,14 @@ class RewardTree(RewardModel):
             history["m"] = len(tree)
 
         i, loss = min([(i, h["loss"]) for i, h in enumerate(histories)], key=lambda x:x[1])
-        self.tree = trees[i]
+        self.tree = trees[i] # NOTE: This triggers tree.setter
         self.history[history_key] = histories[i]
 
         print([(_i, h["m"], h["loss"]) for _i, h in enumerate(histories)])
         print(i)
-        print(self.rules(self.tree, pred_dims="reward", sf=5))
+        print(self.rules(self.tree, pred_dims="reward", sf=5, dims_as_indices=False))
 
+        self._current_scale_factor = None
         return {"preference_loss": loss, "num_leaves": len(self.tree)}
 
     def populate(self, tree, graph):
@@ -183,9 +188,9 @@ class RewardTree(RewardModel):
         ep_lengths = np.array([len(tr) for tr in transitions])
         print("Computing maximum likelihood fitness...")
         f, loss = maximum_likelihood_fitness(A, y, self.P["preference_eqn"])
-        # NOTE: scaling by episode lengths (making ep fitness correspond to sum not mean) causes weird behaviour
-        reward_target = f / ep_lengths # * np.mean(ep_lengths) / ep_lengths
         print(f"Done (loss = {loss})")
+        # NOTE: scaling by episode lengths (making ep fitness correspond to sum not mean) causes weird behaviour
+        reward_target = f * self._current_scale_factor / ep_lengths
         # Populate space, then the tree itself
         tree.space.data = np.hstack((
             # NOTE: Using index in transition list rather than graph.nodes
@@ -263,11 +268,12 @@ class RewardTree(RewardModel):
         i_counts, j_counts = counts[i_list], counts[j_list]
         pair_diff = (mean * (i_counts - j_counts)).sum(axis=1)
         if self.P["preference_eqn"] == "thurstone":
+            raise NotImplementedError("Apply scale factor")
             pair_var = (var * (i_counts**2 + j_counts**2)).sum(axis=1)
             pair_var[np.logical_and(pair_diff == 0, pair_var == 0)] = 1 # Handle 0/0 case
             y_pred = norm_s.cdf(pair_diff / np.sqrt(pair_var)) # Div/0 is fine
         elif self.P["preference_eqn"] == "bradley-terry":
-            y_pred = 1 / (1 + np.exp(-pair_diff))
+            y_pred = 1 / (1 + np.exp(-pair_diff / self._current_scale_factor))
         if self.P["loss_func"] == "bce":
             # Robust binary cross-entropy loss (https://stackoverflow.com/a/50024648)
             loss = (-(xlogy(y, y_pred) + xlog1py(1 - y, -y_pred))).mean()
@@ -290,7 +296,7 @@ class RewardTree(RewardModel):
 # ==============================================================================
 # UTILITIES
 
-def least_squares_fitness(A, y, p_clip, preference_eqn="thurstone"):
+def least_squares_fitness(A, y, p_clip, preference_eqn):
     """
     Construct least fitness estimates under the specified preference equation.
     Uses Morrissey-Gulliksen method for incomplete comparison matrix.
@@ -302,7 +308,7 @@ def least_squares_fitness(A, y, p_clip, preference_eqn="thurstone"):
     # f = np.linalg.lstsq((A.T @ A).cpu().numpy(), (A.T @ d).cpu().numpy(), rcond=None)[0]
     return (f - f.max()).cpu().numpy(), d, residuals # NOTE: Shift so that maximum fitness is zero (cost function)
 
-def maximum_likelihood_fitness(A, y, preference_eqn="thurstone", lr=0.1, epsilon=1e-5):
+def maximum_likelihood_fitness(A, y, preference_eqn, lr=0.1, epsilon=1e-5):
     """
     Construct maximum likelihood fitness estimates under the specified preference equation.
     Normalise fitness to be negative on the training set, with unit standard deviation.
