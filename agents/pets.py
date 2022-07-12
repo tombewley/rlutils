@@ -81,7 +81,6 @@ class PetsAgent(Agent):
                     ax.scatter3D(*first_actions[0,:,:3].T, c="k")
                     ax.scatter3D(*first_actions[-1,:,:3].T, c="g")
                     ax.scatter3D(*actions[-1,best,0,:3].T, c="r", s=100)
-                    print(std[:,0])
                     plt.show()
 
                 action = actions[-1,best,0].squeeze(0) # Take first action only

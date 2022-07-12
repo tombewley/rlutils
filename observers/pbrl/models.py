@@ -42,11 +42,9 @@ class RewardNet:
         if features is None: features = self.featuriser(transitions)
         mu, log_std = reparameterise(self.net(features), clamp=("soft", -2, 2), params=True)
         # NOTE: Scaling up std output helps avoid extreme probabilities
-        mu, std = mu.squeeze(1), torch.exp(log_std).squeeze(1) * 100. 
-        if normalise:            
-            mu, std = (mu - self.shift) / self.scale, std / self.scale  
-        var = torch.pow(std, 2.)
-        return mu, var, std
+        mu, std = mu.squeeze(-1), torch.exp(log_std).squeeze(-1) * 100.
+        if normalise: mu, std = (mu - self.shift) / self.scale, std / self.scale
+        return mu, torch.pow(std, 2.), std
 
     def fitness(self, transitions=None, features=None):
         mu, var, _ = self(transitions, features)
