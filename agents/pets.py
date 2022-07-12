@@ -5,8 +5,6 @@ from ..common.utils import truncated_normal
 
 import torch
 from numpy import mean
-import matplotlib.pyplot as plt
-from mpl_toolkits import mplot3d
 
 
 class PetsAgent(Agent):
@@ -33,23 +31,19 @@ class PetsAgent(Agent):
         self.action_space_low = torch.tensor(self.env.action_space.low, device=self.device)
         self.action_space_high = torch.tensor(self.env.action_space.high, device=self.device)
         # Create replay memory in two components: one for random transitions one for on-policy transitions.
-        self.random_memory = ReplayMemory(self.P["num_random_steps"])
+        self.random_mode = self.P["num_random_steps"] > 0
+        if self.random_mode: self.random_memory = ReplayMemory(self.P["num_random_steps"])
         self.memory = ReplayMemory(self.P["replay_capacity"])
         self.batch_split = (round(self.P["batch_size"] * self.P["batch_ratio"]), round(self.P["batch_size"] * (1-self.P["batch_ratio"])))
         # Tracking variables.
-        self.random_mode = True
-        self.t, self.total_t = 0, 0
+        self.total_t = 0
         self.ep_action_stds, self.ep_losses = [], []
 
     def act(self, state, explore=True, do_extra=False):
         """Either random or model-based action selection."""
         with torch.no_grad():
             extra = {}
-            if explore and self.random_mode:
-                action = self.env.action_space.sample()
-                if do_extra: 
-                    action_torch = torch.tensor(action, device=self.device).unsqueeze(0)
-                    extra["next_state_pred"] = self.model.predict(state, action_torch)[0].cpu().numpy()
+            if explore and self.random_mode: action = self.env.action_space.sample()
             else:
                 # CEM: use model and reward function to generate and evaluate action sequences sampled from a truncated normal.
                 # After each iteration, refine the parameters of the truncated normal based on a subset of elites and resample.
@@ -61,6 +55,7 @@ class PetsAgent(Agent):
                 actions = torch.empty((self.P["cem_iterations"], self.P["cem_particles"], self.model.horizon, 1, action_dim), device=self.device)
                 returns = torch.zeros((self.P["cem_iterations"], self.P["cem_particles"]                                   ), device=self.device)
                 gamma_range = torch.tensor([self.P["gamma"]**t for t in range(self.model.horizon)], device=self.device).reshape(1,-1,1)
+                if do_extra: states = []
                 for i in range(self.P["cem_iterations"]):
                     if i > 0:
                         # Update sampling distribution using elites from previous iteration.
@@ -70,25 +65,17 @@ class PetsAgent(Agent):
                     # Sample action sequences from truncated normal parameterised by mean/std and action space bounds.
                     actions[i] = truncated_normal(actions[i], mean=mean[i], std=std[i], a=self.action_space_low, b=self.action_space_high)
                     # Propogate action sequences through the model.
-                    states, _, rewards = self.model.rollout(state, actions=actions[i], ensemble_index="ts1_a")
+                    s, _, rewards = self.model.rollout(state, actions=actions[i], ensemble_index="ts1_a")
                     returns[i] = (gamma_range * rewards).sum(axis=1).squeeze()
                     elites = returns[i].topk(self.P["cem_elites"]).indices
-                best = elites[0]
-
-                if self.P["cem_review"]:
-                    first_actions = actions[:,:,0].squeeze()
-                    plt.figure(); ax = plt.axes(projection="3d")
-                    ax.scatter3D(*first_actions[0,:,:3].T, c="k")
-                    ax.scatter3D(*first_actions[-1,:,:3].T, c="g")
-                    ax.scatter3D(*actions[-1,best,0,:3].T, c="r", s=100)
-                    plt.show()
-
-                action = actions[-1,best,0].squeeze(0) # Take first action only
+                    if do_extra: states.append(s)
+                # Take first action from best elite.
+                action = actions[-1,elites[0],0].squeeze(0)
                 action = action.cpu().numpy() if self.continuous_actions else action.item()
                 self.ep_action_stds.append((std[-1,0] / self.act_k).mean().item())
                 if do_extra:
-                    extra["g_pred"] = returns[-1,best].item()
-                    extra["next_state_pred"] = states[best,1].cpu().numpy()
+                    extra["mean"], extra["std"], extra["states"], extra["actions"] = \
+                    mean.squeeze(), std.squeeze(), torch.stack(states).squeeze(), actions.squeeze()
             return action, extra
 
     def update_on_batch(self):
@@ -116,32 +103,14 @@ class PetsAgent(Agent):
             print("Random data collection complete.")
         if self.random_mode: self.random_memory.add(state, action, reward, next_state, done)
         else: self.memory.add(state, action, reward, next_state, done)
-        self.t += 1; self.total_t += 1
+        self.total_t += 1
         if self.P["model_freq"] > 0 and self.total_t % self.P["model_freq"] == 0: self.update_on_batch()
 
     def per_episode(self):
         """Operations to perform on each episode end during training."""
         logs = {"model_loss": mean(self.ep_losses) if self.ep_losses else 0., "random_mode": int(self.random_mode),
                 "next_action_std": mean(self.ep_action_stds) if self.ep_action_stds else 0.}
-        if self.P["rollout_review"] and not self.random_mode: # NOTE: Ignores random memory.
-            # Rollout the latest episode's action sequence from the initial state.
-            states, actions, _, _, next_states = self.memory.sample(self.t, mode="latest", keep_terminal_next=True)
-            if states is not None:
-                states = torch.cat([states, next_states[-1:]], dim=0) # Add final state.
-                
-                N = 20
-                DIMS = (0, 2, 1)
-
-                with torch.no_grad():
-                    sim_states, _, _ = self.model.rollout(states[0].unsqueeze(0), actions=actions.expand(N,-1,-1).unsqueeze(2), ensemble_index="ts1_b")
-                sim_states = sim_states.squeeze(2)
-
-                plt.figure(); ax = plt.axes(projection="3d")
-                for s in sim_states: ax.plot3D(*s[:,DIMS].T, c="gray", lw=0.5)
-                ax.plot3D(*states[:,DIMS].T, c="k", lw=2)
-                plt.show()
-
-        del self.ep_action_stds[:], self.ep_losses[:]; self.t = 0
+        del self.ep_action_stds[:], self.ep_losses[:]
         return logs
 
     def save(self, path, clear_memory=True):
