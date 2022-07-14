@@ -35,7 +35,7 @@ def build_params(paths, params=None, root_dir="", verbose=False):
             if "=" in p: # For parameter array
                 p, i = p.split("=")
             new = importlib.import_module(f"{root_dir}.{p}".replace("/",".")).P
-        except ImportError: # If not a recognised config file, treat as filename for loading
+        except ModuleNotFoundError: # If not a recognised config file, treat as filename for loading
             new = {"deployment": {"agent_load_fname": p}} 
         recursive_update(update, new, i=i, block_overwrite=True, verbose=False)
     recursive_update(params, update, verbose=verbose)
