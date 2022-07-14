@@ -1,4 +1,4 @@
-from .featuriser import Featuriser
+from ...common.featuriser import Featuriser
 from ...common.networks import SequentialNetwork
 from ...common.utils import reparameterise
 
@@ -23,8 +23,13 @@ class RewardModel:
         self.P = P
         self.featuriser = Featuriser(self.P["featuriser"])
 
+    def __call__(self, states, actions, next_states):
+        mu, _, std = self._call_inner(self.featuriser(states, actions, next_states))
+        if "rune_coef" in self.P: return mu + self.P["rune_coef"] * std
+        else: return mu
 
-class RewardNet:
+
+class RewardNet(RewardModel):
     def __init__(self, P):
         RewardModel.__init__(self, P)
         self.net = SequentialNetwork(device=self.device,
@@ -38,23 +43,24 @@ class RewardNet:
             )
         self.shift, self.scale = 0., 1.
 
-    def __call__(self, transitions=None, features=None, normalise=True):
-        if features is None: features = self.featuriser(transitions)
+    def _call_inner(self, features, normalise=True):
         mu, log_std = reparameterise(self.net(features), clamp=("soft", -2, 2), params=True)
         # NOTE: Scaling up std output helps avoid extreme probabilities
         mu, std = mu.squeeze(-1), torch.exp(log_std).squeeze(-1) * 100.
         if normalise: mu, std = (mu - self.shift) / self.scale, std / self.scale
         return mu, torch.pow(std, 2.), std
 
-    def fitness(self, transitions=None, features=None):
-        mu, var, _ = self(transitions, features)
+    def fitness(self, states=None, actions=None, next_states=None, features=None):
+        if features is None: features = self.featuriser(states, actions, next_states)
+        mu, var, _ = self._call_inner(features)
         return mu.sum(), var.sum()
 
     def update(self, graph, history_key):
-        transitions, A, i_list, j_list, y = graph.make_data_structures()
+        states, actions, next_states, A, i_list, j_list, y = graph.make_data_structures()
         k_train, n_train = A.shape
         if k_train == 0: print("=== None connected ==="); return {}
-        features = [self.featuriser(tr) for tr in transitions] # Featurising up-front may be faster if sampling many batches
+        # Featurising up-front may be faster if sampling many batches
+        features = [self.featuriser(s, a, ns) for s, a, ns in zip(states, actions, next_states)]
         rng = np.random.default_rng()
         losses = []
         for _ in range(self.P["num_batches_per_update"]):
@@ -78,7 +84,7 @@ class RewardNet:
             self.net.optimise(loss, retain_graph=False)
             losses.append(loss.item())
         # Normalise rewards to be negative on the training set, with unit standard deviation
-        with torch.no_grad(): all_rewards, _, _ = self(features=torch.cat(features), normalise=False)
+        with torch.no_grad(): all_rewards, _, _ = self._call_inner(torch.cat(features), normalise=False)
         self.shift, self.scale = all_rewards.max(), all_rewards.std()
         return {"preference_loss": np.mean(losses)}
 
@@ -92,9 +98,9 @@ class RewardTree(RewardModel):
         self.rules, self.diagram, self.rectangles, self.show_split_quality = \
         hr.rules, hr.diagram, hr.show_rectangles, hr.show_split_quality
 
-    def __call__(self, transitions):
+    def _call_inner(self, features):
         # NOTE: Awkward torch <-> numpy conversion
-        indices = torch.tensor(self.tree.get_leaf_nums(self.featuriser(transitions).cpu().numpy()))
+        indices = torch.tensor(self.tree.get_leaf_nums(features.cpu().numpy()))
         mu, var = self.r[indices], self.var[indices]
         std = torch.sqrt(var)
         return mu, var, std
@@ -122,16 +128,16 @@ class RewardTree(RewardModel):
         else: return hr.tree.Tree(name=name, root=hr.node.Node(space),
                                   split_dims=split_dims, eval_dims=[r_d])
 
-    def fitness(self, transitions):
+    def fitness(self, states, actions, next_states):
         # https://www.statlect.com/probability-distributions/normal-distribution-linear-combinations
-        n = self.n(self.tree, transitions)
+        n = self.n(self.tree, states, actions, next_states)
         return n @ self.r, n @ torch.diag(self.var) @ n.T
 
     def update(self, graph, history_key, reset_tree=True):
         assert reset_tree; trees = [self.make_tree() for _ in range(self.P["trees_per_update"])]
         histories = [{} for _ in range(self.P["trees_per_update"])]
         # Set factor for scaling rewards
-        self._current_scale_factor = np.mean([len(ep["transitions"]) for _, ep in graph.nodes(data=True)])
+        self._current_scale_factor = np.mean([len(ep["states"]) for _, ep in graph.nodes(data=True)])
         for tree, history in zip(trees, histories):
             if self.P["prune_ratio"] is not None:
 
@@ -187,8 +193,8 @@ class RewardTree(RewardModel):
         Populate tree with all episodes in a preference graph. Compute least squares fitness estimates
         for connected episodes, and apply uniform temporal prior to obtain reward targets.
         """
-        transitions, A, _, _, y = graph.make_data_structures()
-        ep_lengths = np.array([len(tr) for tr in transitions])
+        states, actions, next_states, A, _, _, y = graph.make_data_structures()
+        ep_lengths = np.array([len(s) for s in states])
         print("Computing maximum likelihood fitness...")
         f, loss = maximum_likelihood_fitness(A, y, self.P["preference_eqn"])
         print(f"Done (loss = {loss})")
@@ -196,8 +202,8 @@ class RewardTree(RewardModel):
         reward_target = f * self._current_scale_factor / ep_lengths
         # Populate space, then the tree itself
         tree.space.data = np.hstack((
-            # NOTE: Using index in transition list rather than graph.nodes
-            self.featuriser(torch.cat(transitions)).cpu().numpy(),
+            # NOTE: Indices do not match graph.nodes because unconnected episodes have been removed
+            self.featuriser(torch.cat(states), torch.cat(actions), torch.cat(next_states)).cpu().numpy(),
             np.vstack([[[i, r]] * l for i, (r, l) in enumerate(zip(reward_target, ep_lengths))]),
             ))
         tree.populate()
@@ -255,9 +261,9 @@ class RewardTree(RewardModel):
         return history
 
     def make_loss_data_structures(self, tree, graph):
-        transitions, _, i_list, j_list, y = graph.make_data_structures(unconnected_ok=True)
+        states, actions, next_states, _, i_list, j_list, y = graph.make_data_structures(unconnected_ok=True)
         mean, var = (np.array(attr) for attr in tree.gather(("mean","reward"), ("var","reward")))
-        counts = np.vstack([self.n(tree, tr).cpu().numpy() for tr in transitions])
+        counts = np.vstack([self.n(tree, s, a, ns).cpu().numpy() for s, a, ns in zip(states, actions, next_states)])
         y = y.cpu().numpy()
         return mean, var, counts, i_list, j_list, y
 
@@ -290,10 +296,10 @@ class RewardTree(RewardModel):
         assert not np.isinf(loss)
         return loss
 
-    def n(self, tree, transitions):
-        assert len(transitions.shape) == 2
+    def n(self, tree, states, actions, next_states):
+        assert len(states.shape) == 2
         n = torch.zeros(len(tree), device=self.device)
-        for x in tree.get_leaf_nums(self.featuriser(transitions).cpu().numpy()): n[x] += 1
+        for x in tree.get_leaf_nums(self.featuriser(states, actions, next_states).cpu().numpy()): n[x] += 1
         return n
 
 # ==============================================================================

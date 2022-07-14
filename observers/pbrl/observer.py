@@ -1,26 +1,25 @@
-from numpy import corrcoef
-from .graph import PreferenceGraph
-from .sampler import Sampler
+from ...rewards.pbrl.graph import PreferenceGraph
+from ...rewards.pbrl.sampler import Sampler
+from ...rewards.pbrl.interactions import preference_batch
+from ...rewards.epic import epic, epic_with_return
 from .explainer import Explainer
-from .interactions import preference_batch, oracle_vs_model_on_graph
 
 import os
-import torch
+from torch import save as pt_save, load as pt_load, device, cuda
 
 
 class PbrlObserver:
     """
     xxx
     """
-    def __init__(self, P, run_names=None, episodes=None):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.P = P
-        self.run_names = run_names if run_names is not None else [] # NOTE: Order crucial to match with episodes
+    def __init__(self, P, run_names=None):
+        self.P = {} if P is None else P
+        self.run_names = run_names if run_names is not None else []
         # Preference graph, reward model, trajectory pair sampler, preference collection interface and explainer are all modular
-        self.graph = PreferenceGraph(self.device, episodes)
+        self.graph = PreferenceGraph()
         self.model = self.P["model"]["class"](self.P["model"]) if "model" in self.P else None
-        self.sampler = Sampler(self, self.P["sampler"]) if "sampler" in self.P else None
-        self.interface = self.P["interface"]["class"](self, self.P["interface"]) if "interface" in self.P else None
+        self.sampler = Sampler(self.graph, self.model, self.P["sampler"]) if "sampler" in self.P else None
+        self.interface = self.P["interface"]["class"](self.graph, self.P["interface"]) if "interface" in self.P else None
         self.explainer = Explainer(self, self.P["explainer"] if "explainer" in self.P else {})
         self._observing = "observe_freq" in self.P and self.P["observe_freq"] > 0
         self._saving = "save_freq" in self.P and self.P["save_freq"] > 0
@@ -41,37 +40,17 @@ class PbrlObserver:
         Link the reward model to the replay memory of an off-policy RL agent.
         """
         assert len(agent.memory) == 0, "Agent must be at the start of learning."
-        assert agent.device == self.device
+        assert agent.device == self.graph.device
         agent.memory.__init__(agent.memory.capacity, reward=self.reward, relabel_mode="eager")
         if not agent.memory.lazy_reward: self.relabel_memory = agent.memory.relabel
 
-# ==============================================================================
-# PREDICTION METHODS
-
-    def reward(self, states, actions, next_states, return_params=False):
-        """
-        Reward function, defined over individual transitions (s,a,s').
-        """
+    def reward(self, states, actions, next_states):
         assert self.P["reward_source"] != "extrinsic", "This shouldn't have been called. Unwanted call to pbrl.link(agent)?"
-        if len(actions.shape) == 1: actions = torch.tensor([self.P["discrete_action_map"][a] for a in actions], device=self.device)
-        transitions = torch.cat([states, actions, next_states], dim=-1)
-        if self.P["reward_source"] == "oracle":
-            assert not return_params, "Oracle doesn't use normal distribution parameters"
-            return self.interface.oracle(transitions)
-        else:
-            mu, _, std = self.model(transitions)
-        if "rune_coef" in self.P: return mu + self.P["rune_coef"] * std
-        else: return mu
-
-# ==============================================================================
-# METHODS SPECIFIC TO ONLINE LEARNING
+        if self.P["reward_source"] == "oracle": return self.interface.oracle(states, actions, next_states)
+        if self.P["reward_source"] == "model": return self.model(states, actions, next_states) 
 
     def per_timestep(self, ep_num, t, state, action, next_state, reward, done, info, extra):
-        """
-        Store transition for current timestep.
-        """
-        if isinstance(action, int): action = self.P["discrete_action_map"][action]
-        self._current_ep.append(list(state) + list(action) + list(next_state)) # TODO: Keep (s,a,s') separate when store in graph
+        self._current_ep.append((state, action, next_state))
             
     def per_episode(self, ep_num):
         """
@@ -79,16 +58,17 @@ class PbrlObserver:
         to the preference graph, creating logs, and (if self._online==True), occasionally gathering
         a preference batch and updating the reward model.
         """   
-        self._current_ep = torch.tensor(self._current_ep, device=self.device).float() # Convert to tensor once appending finished
+        s, a, ns = self.graph.tensorise(self._current_ep)
+        self._current_ep = []
         logs = {}
         # Log reward sums
         if self.P["reward_source"] == "model": 
-            logs["reward_sum_model"] = self.model.fitness(self._current_ep)[0].item()
+            logs["reward_sum_model"] = self.model.fitness(s, a, ns)[0].item()
         if self.interface is not None and self.interface.oracle is not None: 
-            logs["reward_sum_oracle"] = sum(self.interface.oracle(self._current_ep)).item()
+            logs["reward_sum_oracle"] = sum(self.interface.oracle(s, a, ns)).item()
         # Add episodes to the preference graph with a specified frequency
         if self._observing and (ep_num+1) % self.P["observe_freq"] == 0:
-            self.graph.add_episode(transitions=self._current_ep, run_name=self.run_names[-1], ep_num=ep_num)
+            self.graph.add_episode(s, a, ns, run_name=self.run_names[-1], ep_num=ep_num)
         if self._online:
             if (ep_num+1) % self.P["feedback_freq"] == 0 and (ep_num+1) <= self.P["num_episodes_before_freeze"]:
                 # Calculate batch size.
@@ -120,42 +100,35 @@ class PbrlObserver:
                 ))
                 # If using oracle, measure alignment
                 if self.interface.oracle is not None:
-                    rewards, returns = oracle_vs_model_on_graph(self.interface.oracle, self.model, self.graph)
-                    logs["reward_correlation"] = torch.corrcoef(rewards.T)[0,1].item()
-                    logs["return_correlation"] = torch.corrcoef(returns.T)[0,1].item()
+                    corr_r, corr_g, _, _ = epic_with_return([self.interface.oracle, self.model], self.graph.states, self.graph.actions, self.graph.next_states)
+                    logs["reward_correlation"], logs["return_correlation"] = corr_r[0,1], corr_g[0,1]
                 self.relabel_memory() # If applicable, relabel the agent's replay memory using the updated reward
                 self._batch_num += 1 
                 self._n_on_prev_batch = len(self.graph)
             # Periodically log and save out
             if self.explainer.P and (ep_num+1) % self.explainer.P["freq"] == 0: self.explainer(history_key=(ep_num+1))
         if self._saving and (ep_num+1) % self.P["save_freq"] == 0: self.save(history_key=(ep_num+1))
-        self._current_ep = []
         return logs
 
     def relabel_memory(self): pass
 
-# ==============================================================================
-# SAVING/LOADING
-
     def save(self, history_key):
-        path = f"models/{self.run_names[-1]}"
+        path = f"{self.P['save_path']}/{self.run_names[-1]}"
         if not os.path.exists(path): os.makedirs(path)
-        torch.save({
+        pt_save({
             "graph": self.graph,
             "model": self.model
         }, f"{path}/{history_key}.pbrl")
 
-def load(fname, P):
+def load(fname, P=None):
     """
     Make an instance of PbrlObserver from the information stored by the .save() method.
     """
-    dict = torch.load(fname, torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+    dict = pt_load(fname, device("cuda" if cuda.is_available() else "cpu"))
     pbrl = PbrlObserver(P)
     pbrl.graph = dict["graph"]
+    pbrl.model = dict["model"]
     pbrl.graph.device = pbrl.device
-    if dict["model"] is not None:
-        assert pbrl.model is None, "New/existing model conflict."
-        pbrl.model = dict["model"]
-        pbrl.model.device = pbrl.device
+    if dict["model"] is not None: pbrl.model.device = pbrl.device
     print(f"Loaded {fname}")
     return pbrl

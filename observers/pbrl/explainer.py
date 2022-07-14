@@ -1,5 +1,4 @@
-from .models import maximum_likelihood_fitness, least_squares_fitness
-from .interactions import oracle_vs_model_on_graph
+from ...rewards.pbrl.models import maximum_likelihood_fitness, least_squares_fitness
 
 from hyperrectangles.visualise import show_rectangles, show_samples
 import os
@@ -92,6 +91,7 @@ class Explainer:
         _, axes = plt.subplots(1, 3, figsize=(18, 4))
         _, A, i_list, j_list, y = self.pbrl.graph.make_data_structures()
         connected = set(i_list) | set(j_list)
+        raise NotImplementedError("Use epic.epic_with_return")
         rewards, returns = oracle_vs_model_on_graph(self.pbrl.interface.oracle, self.pbrl.model, self.pbrl.graph)
         if len(A):
             # Oracle vs trajectory-level return
@@ -131,7 +131,7 @@ class Explainer:
 # VISUAL (LOCAL)
 
     def explain_episode_fitness(self, ep_num):
-        from .models import fitness_case_v
+        from ...rewards.pbrl.models import fitness_case_v
         A, y, i_list, j_list, connected = self.pbrl.graph.construct_A_and_y()
         f, d, _ = fitness_case_v(A, y, self.pbrl.model.P["p_clip"])
         other_ep_num, target_fitness = [], []

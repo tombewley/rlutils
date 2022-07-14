@@ -4,8 +4,8 @@ from scipy.stats import norm
 
 
 class Interface:
-    def __init__(self, pbrl):
-        self.pbrl, self.oracle = pbrl, None
+    def __init__(self, graph):
+        self.graph, self.oracle = graph, None
         self.seed()
 
     def seed(self, seed=None):
@@ -20,18 +20,19 @@ class VideoInterface(Interface):
 
     import os, cv2 # Lazy import
 
-    def __init__(self, pbrl, P):
-        Interface.__init__(self, pbrl)
+    def __init__(self, graph, P):
+        Interface.__init__(self, graph)
         self.mapping = {81: 1., 83: 0., 32: 0.5, 27: "esc"}
 
     def __enter__(self):
         self.videos = []
+        raise NotImplementedError("Use run_name stored in graph")
         for rn in self.pbrl.run_names:
             run_videos = sorted([f"video/{rn}/{f}" for f in self.os.listdir(f"video/{rn}") if ".mp4" in f])
             assert [int(v[-10:-4]) for v in run_videos] == list(range(len(run_videos)))
             self.videos += run_videos
-        if len(self.videos) != len(self.pbrl.graph):
-            assert len(self.videos) == len(self.pbrl.graph) + 1
+        if len(self.videos) != len(self.graph):
+            assert len(self.videos) == len(self.graph) + 1
             print("Partial video found; ignoring.")                
         self.cv2.startWindowThread()
         self.cv2.namedWindow("Trajectory Pairs", self.cv2.WINDOW_NORMAL)
@@ -59,11 +60,9 @@ class VideoInterface(Interface):
 
 class OracleInterface(Interface):
     """
-    Oracle class implementing the five modes of irrationality in the SimTeacher algorithm:
-
-    Lee, K., L. Smith, A. Dragan, and P. Abbeel. 
-    "B-Pref: Benchmarking Preference-Based Reinforcement Learning." 
-    Neural Information Processing Systems (NeurIPS) (2021).
+    Oracle class implementing the five modes of irrationality in the SimTeacher algorithm. From:
+        Lee, K., L. Smith, A. Dragan, and P. Abbeel. "B-Pref: Benchmarking Preference-Based Reinforcement Learning." 
+        Neural Information Processing Systems (NeurIPS) (2021).
 
     (1) "Myopic" recency bias with discount factor gamma
     (2) Query skipping if max(ret_i, ret_j) is below d_skip
@@ -85,14 +84,15 @@ class OracleInterface(Interface):
     # Defaults
     P = {"gamma": 1, "sigma": 0, "d_skip": -float("inf"), "p_equal": 0, "epsilon": 0, "return_P_i": False}
 
-    def __init__(self, pbrl, P):
-        Interface.__init__(self, pbrl)
+    def __init__(self, graph, P):
+        Interface.__init__(self, graph)
         self.oracle = P["oracle"]
         self.P.update(P)
 
     def __call__(self, i, j):
-        ret_i = self.myopic_sum(self.oracle(self.pbrl.graph.nodes[i]["transitions"]))
-        ret_j = self.myopic_sum(self.oracle(self.pbrl.graph.nodes[j]["transitions"]))
+        ep_i, ep_j = self.graph.nodes[i], self.graph.nodes[j]
+        ret_i = self.myopic_sum(self.oracle(ep_i["states"], ep_i["actions"], ep_i["next_states"]))
+        ret_j = self.myopic_sum(self.oracle(ep_j["states"], ep_j["actions"], ep_j["next_states"]))
         if max(ret_i, ret_j) < self.P["d_skip"]:  return "skip"
         diff = ret_i - ret_j
         if self.P["sigma"] == 0: P_i = 0.5 if diff == 0 else 1. if diff > 0 else 0.

@@ -7,12 +7,13 @@ norm = torch.distributions.Normal(0, 1)
 
 
 class Sampler:
-    def __init__(self, pbrl, P): 
-        self.pbrl, self.P = pbrl, P
+    def __init__(self, graph, model, P):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.graph, self.model, self.P = graph, model, P
         self.seed()
 
     def seed(self, seed=None):
-        self.pt_rng = torch.Generator(device=self.pbrl.device)
+        self.pt_rng = torch.Generator(device=self.device)
         if seed is not None: self.pt_rng.manual_seed(seed)
         self.np_rng = default_rng(seed)
 
@@ -22,10 +23,11 @@ class Sampler:
         """
         self._k = 0
         if self.P["weight"] == "uniform":
-            n = len(self.pbrl.graph); self.w = torch.zeros((n, n), device=self.pbrl.device)
+            n = len(self.graph); self.w = torch.zeros((n, n), device=self.device)
         else:
             with torch.no_grad(): 
-                mu, var = torch.tensor([self.pbrl.model.fitness(ep["transitions"]) for _, ep in self.pbrl.graph.nodes(data=True)], device=self.pbrl.device).T
+                mu, var = torch.tensor([self.model.fitness(ep["states"], ep["actions"], ep["next_states"])
+                                        for _, ep in self.graph.nodes(data=True)], device=self.device).T
             if "ucb" in self.P["weight"]:
                 self.w = ucb_sum(mu, var, num_std=self.P["num_std"])
                 if self.P["weight"] == "ucb_r": self.w = -self.w # Invert
@@ -38,8 +40,8 @@ class Sampler:
         Sample a trajectory pair from the current weighting matrix subject to constraints.
         """
         if self._k >= self.batch_size: return 1, None, None, None # Batch completed
-        n = len(self.pbrl.graph); assert self.w.shape == (n, n)
-        not_rated = torch.isnan(self.pbrl.graph.preference_matrix) # TODO: Can bypass this and compute directly from graph
+        n = len(self.graph); assert self.w.shape == (n, n)
+        not_rated = torch.isnan(self.graph.preference_matrix) # TODO: Can bypass this and compute directly from graph
         if not_rated.sum() <= n: return 2, None, None, None # Fully connected
         p = self.w.clone()
         # Enforce non-identity constraint...

@@ -1,6 +1,6 @@
 import networkx as nx
 from numpy.random import default_rng
-from torch import tensor, isnan, zeros
+from torch import tensor, isnan, zeros, device, cuda
 import matplotlib.pyplot as plt
 
 
@@ -8,11 +8,9 @@ class PreferenceGraph:
     """
     xxx
     """
-    def __init__(self, device, episodes=None):
-        self.device = device
+    def __init__(self):
+        self.device = device("cuda" if cuda.is_available() else "cpu")
         self._graph = nx.DiGraph()
-        self._graph.add_nodes_from([(i, {"transitions": ep}) for i, ep in
-                                    enumerate(episodes if episodes is not None else [])])
         self.seed()
 
     def seed(self, seed=None):
@@ -22,9 +20,14 @@ class PreferenceGraph:
 
     @property
     def nodes(self): return self._graph.nodes
-
     @property
     def edges(self): return self._graph.edges
+    @property
+    def states(self): return [ep["states"] for _,ep in self.nodes(data=True)]
+    @property
+    def actions(self): return [ep["actions"] for _,ep in self.nodes(data=True)]
+    @property
+    def next_states(self): return [ep["next_states"] for _,ep in self.nodes(data=True)]
 
     @property
     def preference_matrix(self):
@@ -33,11 +36,17 @@ class PreferenceGraph:
         matrix[mask] = reverse[mask]
         return matrix
 
-    def add_episode(self, transitions, **kwargs):
+
+    def tensorise(self, s_a_ns_list):
+        return tensor([s  for s,_,__ in s_a_ns_list], device=self.device), \
+               tensor([a  for _,a,__ in s_a_ns_list], device=self.device), \
+               tensor([ns for _,_,ns in s_a_ns_list], device=self.device)
+
+    def add_episode(self, states, actions, next_states, **kwargs):
         """
         NOTE: Currently numbers nodes as consecutive integers, but stores ep_num as an attribute.
         """
-        self._graph.add_node(len(self._graph), transitions=transitions, **kwargs)
+        self._graph.add_node(len(self._graph), states=states, actions=actions, next_states=next_states, **kwargs)
 
     def add_preference(self, history_key, i, j, preference):
         assert i in self._graph and j in self._graph, "Invalid episode index"
@@ -48,20 +57,18 @@ class PreferenceGraph:
         """
         Starting with the preference graph, assemble data structures needed for model updates.
         """
-        connected_subgraph = self.subgraph(edges=self._graph.edges) # Remove unconnected episodes
-        if not(unconnected_ok) and len(connected_subgraph) > 0:
-            assert nx.is_weakly_connected(connected_subgraph._graph), "Morrissey-Gulliksen requires a connected graph."
-        connected = sorted(connected_subgraph.nodes)
-        transitions = [connected_subgraph.nodes[i]["transitions"] for i in connected]
-        pairs = list(connected_subgraph.edges)
-        y = tensor([connected_subgraph.edges[ij]["preference"] for ij in pairs], device=self.device).float()
-        A = zeros((len(pairs), len(connected)), device=self.device)
+        sg = self.subgraph(edges=self.edges) # Remove unconnected episodes
+        if not(unconnected_ok) and len(sg) > 0:
+            assert nx.is_weakly_connected(sg._graph), "Morrissey-Gulliksen requires a connected graph."
+        y = tensor([edge["preference"] for _,_,edge in sg.edges(data=True)], device=self.device).float()
+        A = zeros((len(sg.edges), len(sg)), device=self.device)
+        sg_nodes = list(sg.nodes)
         i_list, j_list = [], []
-        for l, (i, j) in enumerate(pairs): 
-            i_c, j_c = connected.index(i), connected.index(j) # Indices in connected list
+        for l, (i, j) in enumerate(sg.edges): 
+            i_c, j_c = sg_nodes.index(i), sg_nodes.index(j) # Indices in subgraph
             A[l, i_c], A[l, j_c] = 1, -1
             i_list.append(i_c); j_list.append(j_c)
-        return transitions, A, i_list, j_list, y
+        return sg.states, sg.actions, sg.next_states, A, i_list, j_list, y
 
     def show(self, figsize=(12, 12)):
         # self.pbrl.graph = nx.DiGraph()
@@ -101,7 +108,7 @@ class PreferenceGraph:
         # weights = list(nx.get_edge_attributes(self._graph, "preference").values())
         # for i, e in enumerate(edge_collection): e.set_alpha(weights[i])
         # nx.draw_networkx_edge_labels(self._graph, pos=pos, label_pos=0.4, font_size=6,
-        #     edge_labels={(i, j): f"{d['weight']:.2f}" for i, j, d in self._graph.edges(data=True)}
+        #     edge_labels={(i, j): f"{d['weight']:.2f}" for i, j, d in self.edges(data=True)}
         #     )
         return node_collection, edge_collection
 
@@ -109,7 +116,7 @@ class PreferenceGraph:
 # SUBGRAPH EXTRACTION
 
     def subgraph(self, nodes=None, edges=None):
-        sg = PreferenceGraph(device=self.device)
+        sg = PreferenceGraph()
         sg._graph = self._graph.subgraph(nodes) if nodes is not None else self._graph.edge_subgraph(edges)
         return sg
 
@@ -118,7 +125,7 @@ class PreferenceGraph:
         Create a frozen subgraph containing all preferences added before history_key.
         """
         if history_key is None: return self
-        return self.subgraph(edges=[(i,j) for i,j,d in self._graph.edges(data=True) if d["history_key"] <= history_key])
+        return self.subgraph(edges=[(i,j) for i,j,d in self.edges(data=True) if d["history_key"] <= history_key])
 
     def random_connected_subgraph(self, num_edges):
         """

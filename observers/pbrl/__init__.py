@@ -1,1 +1,1 @@
-from .pbrl import PbrlObserver, load
+from .observer import PbrlObserver, load
