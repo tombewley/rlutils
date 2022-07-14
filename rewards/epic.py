@@ -3,20 +3,21 @@ import networkx as nx
 from sklearn.manifold import MDS
 
 
-def epic(reward_functions, states, actions, next_states, canon_actions, canon_next_states, gamma=1.):
+def epic(reward_functions, states, actions, next_states, canon_actions, canon_next_states, gamma=1., do_canon=True):
     """
     Equivalent-Policy Invariant Comparison (EPIC) pseudometric. From:
         Gleave, Adam et al. "Quantifying Differences in Reward Functions." ICLR 2021.
     """
-    # Compute canonicalised rewards, which are invariant to potential-based shaping
     n_v = len(states)
     assert len(actions) == len(next_states) == n_v
     with no_grad():
         rewards = stack([r(states, actions, next_states) for r in reward_functions])
-        means = stack([mean_rewards(r, vstack((states, next_states)), canon_actions, canon_next_states) for r in reward_functions])
-        canon_rewards = rewards + gamma * means[:,n_v:] - means[:,:n_v]
+        if do_canon:
+            # Compute canonicalised rewards, which are invariant to potential-based shaping
+            means = stack([mean_rewards(r, vstack((states, next_states)), canon_actions, canon_next_states) for r in reward_functions])
+            rewards += gamma * means[:,n_v:] - means[:,:n_v]
     # Compute all pairwise Pearson distances and represent as an undirected networkx graph
-    return nx.from_numpy_matrix(sqrt(0.5 * (1 - corrcoef(canon_rewards))).cpu().numpy())
+    return nx.from_numpy_matrix(sqrt(0.5 * (1 - corrcoef(rewards))).cpu().numpy())
 
 def mean_rewards(reward_function, states, actions, next_states):
     """
