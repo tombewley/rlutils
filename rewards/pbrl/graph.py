@@ -1,4 +1,5 @@
 import networkx as nx
+from numpy import array
 from numpy.random import default_rng
 from torch import tensor, isnan, zeros, device, cuda
 import matplotlib.pyplot as plt
@@ -38,9 +39,9 @@ class PreferenceGraph:
 
 
     def tensorise(self, s_a_ns_list):
-        return tensor([s  for s,_,__ in s_a_ns_list], device=self.device), \
-               tensor([a  for _,a,__ in s_a_ns_list], device=self.device), \
-               tensor([ns for _,_,ns in s_a_ns_list], device=self.device)
+        return tensor(array([s  for s,_,__ in s_a_ns_list]), device=self.device), \
+               tensor(array([a  for _,a,__ in s_a_ns_list]), device=self.device), \
+               tensor(array([ns for _,_,ns in s_a_ns_list]), device=self.device)
 
     def add_episode(self, states, actions, next_states, **kwargs):
         """

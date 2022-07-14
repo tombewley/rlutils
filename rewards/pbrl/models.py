@@ -323,7 +323,7 @@ def maximum_likelihood_fitness(A, y, preference_eqn, lr=0.1, epsilon=1e-5):
     Normalise fitness to be negative on the training set, with unit standard deviation.
     https://apps.dtic.mil/sti/pdfs/ADA543806.pdf.
     """
-    f = norm.sample((A.shape[1],)) # Initialise with samples from standard normal
+    f = norm.sample((A.shape[1],)).to(A.device) # Initialise with samples from standard normal
     f.requires_grad = True
     opt = torch.optim.Adam([f], lr=lr)
     loss = float("inf")
