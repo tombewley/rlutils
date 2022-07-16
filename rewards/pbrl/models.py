@@ -100,7 +100,7 @@ class RewardTree(RewardModel):
 
     def _call_inner(self, features):
         # NOTE: Awkward torch <-> numpy conversion
-        indices = torch.tensor(self.tree.get_leaf_nums(features.cpu().numpy()))
+        indices = torch.tensor(self.tree.get_leaf_nums(features.cpu().numpy()), device=self.device)
         mu, var = self.r[indices], self.var[indices]
         std = torch.sqrt(var)
         return mu, var, std
@@ -239,14 +239,13 @@ class RewardTree(RewardModel):
         with tqdm(total=len(tree), initial=len(tree), desc="Pruning") as pbar:
             while len(subtree) > 1:
                 prune_candidates = []
-                for x in range(len(subtree) - 1):
-                    left, right = subtree.leaves[x:x+2]
-                    if left.parent is right.parent: # i.e. the two leaves are siblings
-                        m = np.delete(mean,   x, axis=0); m[x] = left.parent.mean[r_d]
-                        v = np.delete(var,    x, axis=0); v[x] = left.parent.cov[r_d,r_d]
-                        c = np.delete(counts, x, axis=1); c[:,x] = counts[:,x] + counts[:,x+1]
-                        loss = self.preference_loss(m, v, c, i_list, j_list, y)
-                        prune_candidates.append((x, m, v, c, loss))
+                for x, _ in subtree.siblings:
+                    parent = tree.leaves[x].parent
+                    m = np.delete(mean,   x, axis=0); m[x] = parent.mean[r_d]
+                    v = np.delete(var,    x, axis=0); v[x] = parent.cov[r_d,r_d]
+                    c = np.delete(counts, x, axis=1); c[:,x] = counts[:,x] + counts[:,x+1]
+                    loss = self.preference_loss(m, v, c, i_list, j_list, y)
+                    prune_candidates.append((x, m, v, c, loss))
                 x, mean, var, counts, loss = sorted(prune_candidates, key=lambda cand: cand[4])[0]
                 assert subtree.prune_to(subtree.leaves[x].parent) == {x, x+1}
                 if eval_graph is not None:
