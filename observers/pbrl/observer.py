@@ -124,11 +124,12 @@ def load(fname, P=None):
     """
     Make an instance of PbrlObserver from the information stored by the .save() method.
     """
-    dict = pt_load(fname, device("cuda" if cuda.is_available() else "cpu"))
+    device_ = device("cuda" if cuda.is_available() else "cpu")
+    dict = pt_load(fname, device_)
     pbrl = PbrlObserver(P)
     pbrl.graph = dict["graph"]
     pbrl.model = dict["model"]
-    pbrl.graph.device = pbrl.device
-    if dict["model"] is not None: pbrl.model.device = pbrl.device
+    pbrl.graph.device = device_
+    if dict["model"] is not None: pbrl.model.device = device_
     print(f"Loaded {fname}")
     return pbrl
