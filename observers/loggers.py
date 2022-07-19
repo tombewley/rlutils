@@ -14,3 +14,17 @@ class SumLogger:
         
     def per_episode(self, ep): 
         return {f"{self.P['name']}_{c}": r for c, r in enumerate(self.sums)}
+
+
+class EpLengthLogger:
+    def __init__(self):
+        self.run_names = []
+        self.t = 0
+
+    def per_timestep(self, *args):
+        self.t += 1
+
+    def per_episode(self, ep):
+        log = {"ep_length": self.t}
+        self.t = 0
+        return log
