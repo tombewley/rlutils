@@ -18,6 +18,7 @@ class SumLogger:
 
 class EpLengthLogger:
     def __init__(self):
+        self.P = {}
         self.run_names = []
         self.t = 0
 
