@@ -90,6 +90,7 @@ default_hyperparameters = {
     "cem_particles": 50,
     "cem_elites": 10,
     "cem_alpha": 0.1, # Update rate for CEM sampling distribution.
+    "cem_temperature": 0.5, # Sharpness of elite weighting for MPPI extension.
     "gamma": 0.99, # Discount factor.
     "rollout": {
       "horizon_params": ("constant", 20),

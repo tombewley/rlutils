@@ -38,6 +38,7 @@ class PetsAgent(Agent):
         # Tracking variables.
         self.total_t = 0
         self.ep_action_stds, self.ep_losses = [], []
+        self.warm_start_mean = None
 
     def act(self, state, explore=True, do_extra=False):
         """Either random or model-based action selection."""
@@ -50,16 +51,23 @@ class PetsAgent(Agent):
                 action_dim = self.env.action_space.shape[0]
                 mean    = torch.empty((self.P["cem_iterations"], self.model.horizon, 1, action_dim), device=self.device)
                 std     = torch.empty((self.P["cem_iterations"], self.model.horizon, 1, action_dim), device=self.device)
-                # NOTE: Initialise distribution parameters based on action space bounds.
-                mean[0], std[0] = self.act_b, 1*self.act_k
+                # Initialise distribution using action space bounds, optionally warm-starting with shifted previous mean for t+1 onwards.
+                mean[0,:-1] = self.warm_start_mean if self.warm_start_mean is not None else self.act_b
+                mean[0,-1] = self.act_b # If warm-starting, still need to handle final action.
+                std[0] = self.act_k
                 actions = torch.empty((self.P["cem_iterations"], self.P["cem_particles"], self.model.horizon, 1, action_dim), device=self.device)
                 returns = torch.zeros((self.P["cem_iterations"], self.P["cem_particles"]                                   ), device=self.device)
                 gamma_range = torch.tensor([self.P["gamma"]**t for t in range(self.model.horizon)], device=self.device).reshape(1,-1,1)
                 if do_extra: states = []
                 for i in range(self.P["cem_iterations"]):
                     if i > 0:
-                        # Update sampling distribution using elites from previous iteration.
-                        std_elite, mean_elite = torch.std_mean(actions[i-1,elites], dim=0, unbiased=False)
+                        # Update sampling distribution using weighted mean/std of elites from previous iteration,
+                        # as in Model Predictive Path Integral (MPPI) control.
+                        # See "Temporal Difference Learning for Model Predictive Control", Section 3.
+                        elite_weights = torch.exp(self.P["cem_temperature"] * (returns[i-1,elites] - returns[i-1,elites[0]]))
+                        elite_weights_sum = elite_weights.sum()
+                        mean_elite = torch.tensordot(actions[i-1,elites], elite_weights, ([0],[0])) / elite_weights_sum
+                        std_elite = torch.sqrt(torch.tensordot((actions[i-1,elites] - mean_elite)**2, elite_weights, ([0],[0])) / elite_weights_sum)
                         mean[i] = (1 - self.P["cem_alpha"]) * mean[i-1] + self.P["cem_alpha"] * mean_elite
                         std[i] = (1 - self.P["cem_alpha"]) * std[i-1] + self.P["cem_alpha"] * std_elite
                     # Sample action sequences from truncated normal parameterised by mean/std and action space bounds.
@@ -73,6 +81,8 @@ class PetsAgent(Agent):
                 action = actions[-1,elites[0],0].squeeze(0)
                 action = action.cpu().numpy() if self.continuous_actions else action.item()
                 self.ep_action_stds.append((std[-1,0] / self.act_k).mean().item())
+                # Optionally store mean for t+1 onwards to use in warm-starting.
+                if self.P["cem_warm_start"]: self.warm_start_mean = mean[-1,1:] # NOTE: Or actions[-1,elites[0],1]?
                 if do_extra:
                     extra["mean"], extra["std"], extra["states"], extra["actions"] = \
                     mean.squeeze(), std.squeeze(), torch.stack(states).squeeze(), actions.squeeze()
@@ -111,6 +121,7 @@ class PetsAgent(Agent):
         logs = {"model_loss": mean(self.ep_losses) if self.ep_losses else 0., "random_mode": int(self.random_mode),
                 "next_action_std": mean(self.ep_action_stds) if self.ep_action_stds else 0.}
         del self.ep_action_stds[:], self.ep_losses[:]
+        self.warm_start_mean = None
         return logs
 
     def save(self, path, clear_memory=True):
