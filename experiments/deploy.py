@@ -9,13 +9,13 @@ from gym import wrappers
 P_DEFAULT = {"num_episodes": int(1e6), "render_freq": 1}
 
 
-def train(agent, P=P_DEFAULT, renderer=None, observers={}, run_id=None, save_dir="agents"):
+def train(agent, P=P_DEFAULT, renderer=None, run_id=None, save_dir="agents"):
     """
     Shortcut for training; just calls deploy() with train=True.
     """
-    return deploy(agent, P, True, renderer, observers, run_id, save_dir)
+    return deploy(agent, P, True, renderer, run_id, save_dir)
 
-def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers={}, run_id=None, save_dir="agents"):
+def deploy(agent, P=P_DEFAULT, train=False, renderer=None, run_id=None, save_dir="agents"):
 
     do_extra = "do_extra" in P and P["do_extra"] # Whether or not to request extra predictions from the agent.
     do_wandb = "wandb_monitor" in P and P["wandb_monitor"]
@@ -33,7 +33,7 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers={}, run_id=
             id=run_id, 
             resume=resume, 
             monitor_gym="video_to_wandb" in P and P["video_to_wandb"],
-            config={**agent.P, **P, **{n: o.P for n, o in observers.items()}})
+            config={**agent.P, **P, **{n: o.P for n, o in P["observers"].items()}})
         run_name = run.name
         # if train: # TODO: Weight monitoring causes an error with STEVE.
             # try: 
@@ -49,7 +49,7 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers={}, run_id=
 
     # Create directory for saving and tell observers what the run name is.
     if do_checkpoints: import os; save_dir += f"/{run_name}"; os.makedirs(save_dir, exist_ok=True) 
-    for o in observers.values(): o.run_names.append(run_name) 
+    for o in P["observers"].values(): o.run_names.append(run_name)
 
     # Add temporary wrappers to environment. NOTE: These are discarded when deployment is complete.
     env_before_wrappers = agent.env
@@ -89,7 +89,7 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers={}, run_id=
                 if train: agent.per_timestep(state_torch, action, reward, next_state_torch, done)
 
                 # Send all information relating to the current timestep to to the observers.
-                for o in observers.values(): o.per_timestep(ep, t, state, action, next_state, reward, done, info, extra)
+                for o in P["observers"].values(): o.per_timestep(ep, t, state, action, next_state, reward, done, info, extra)
 
                 # Render the environment if applicable.
                 if render_this_ep: agent.env.render()
@@ -107,7 +107,7 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, observers={}, run_id=
             logs = {"reward_sum": reward_sum}
             if train: logs.update(agent.per_episode())    
             elif hasattr(agent, "per_episode_deploy"): logs.update(agent.per_episode_deploy())
-            for o in observers.values(): logs.update(o.per_episode(ep))
+            for o in P["observers"].values(): logs.update(o.per_episode(ep))
 
             # Send logs to Weights & Biases if applicable.
             if do_wandb: wandb.log(logs)
