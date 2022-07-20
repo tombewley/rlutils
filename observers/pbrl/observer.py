@@ -34,6 +34,7 @@ class PbrlObserver:
             self._batch_num = 0
             self._n_on_prev_batch = 0
         self._current_ep = []
+        self._cum_rew_sum_or = 0.
     
     def link(self, agent):
         """
@@ -66,6 +67,8 @@ class PbrlObserver:
             logs["reward_sum_model"] = self.model.fitness(s, a, ns)[0].item()
         if self.interface is not None and self.interface.oracle is not None: 
             logs["reward_sum_oracle"] = sum(self.interface.oracle(s, a, ns)).item()
+            self._cum_rew_sum_or += logs["reward_sum_oracle"]
+            logs["cumulative_reward_sum_oracle"] = self._cum_rew_sum_or
         # Add episodes to the preference graph with a specified frequency
         if self._observing and (ep_num+1) % self.P["observe_freq"] == 0:
             self.graph.add_episode(s, a, ns, run_name=self.run_names[-1], ep_num=ep_num)
