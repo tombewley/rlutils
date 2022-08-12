@@ -20,7 +20,8 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, run_id=None, save_dir
     do_extra = "do_extra" in P and P["do_extra"] # Whether or not to request extra predictions from the agent.
     do_wandb = "wandb_monitor" in P and P["wandb_monitor"]
     do_render = "render_freq" in P and P["render_freq"] > 0
-    do_checkpoints = "checkpoint_freq" in P and P["checkpoint_freq"] > 0    
+    do_checkpoints = "checkpoint_freq" in P and P["checkpoint_freq"] > 0
+    if "observers" not in P: P["observers"] = {}
 
     if do_wandb: 
         # Initialise Weights & Biases monitoring.
