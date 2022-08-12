@@ -18,6 +18,7 @@ class PreferenceGraph:
         self.rng = default_rng(seed)
 
     def __len__(self): return len(self._graph)
+    def __repr__(self): return f"Preference graph with {len(self)} episodes and {len(self.edges)} preferences"
 
     @property
     def nodes(self): return self._graph.nodes
@@ -37,21 +38,19 @@ class PreferenceGraph:
         matrix[mask] = reverse[mask]
         return matrix
 
-
     def tensorise(self, s_a_ns_list):
         return tensor(array([s  for s,_,__ in s_a_ns_list]), device=self.device), \
                tensor(array([a  for _,a,__ in s_a_ns_list]), device=self.device), \
                tensor(array([ns for _,_,ns in s_a_ns_list]), device=self.device)
 
     def add_episode(self, states, actions, next_states, **kwargs):
-        """
-        NOTE: Currently numbers nodes as consecutive integers, but stores ep_num as an attribute.
-        """
         self._graph.add_node(len(self._graph), states=states, actions=actions, next_states=next_states, **kwargs)
 
-    def add_preference(self, history_key, i, j, preference):
-        assert i in self._graph and j in self._graph, "Invalid episode index"
+    def add_preference(self, i, j, preference, history_key=None):
+        assert i != j, f"Self-loop preference: {i} = {j}"
+        assert i in self._graph and j in self._graph, f"Invalid episode index: {i}, {j}"
         assert (not self._graph.has_edge(i, j)) and (not self._graph.has_edge(j, i)), f"Already have preference for ({i}, {j})"
+        assert type(preference) == float and 0. <= preference <= 1., f"Invalid preference value: {preference}"
         self._graph.add_edge(i, j, history_key=history_key, preference=preference)
 
     def make_data_structures(self, unconnected_ok=False):
@@ -71,40 +70,40 @@ class PreferenceGraph:
             i_list.append(i_c); j_list.append(j_c)
         return sg.states, sg.actions, sg.next_states, A, i_list, j_list, y
 
-    def show(self, figsize=(12, 12)):
-        # self.pbrl.graph = nx.DiGraph()
-        # n = len(self.episodes)
-        # self.pbrl.graph.add_nodes_from(range(n), fitness=np.nan, fitness_cv=np.nan)
-        # for i in range(n):
-        #     if self.episodes[i] is not None: self.pbrl.graph.nodes[i]["fitness"], _ = self.pbrl.fitness(self.pbrl.episodes[i])
-        # for i, f in zip(self._connected, self._ep_fitness_cv):
-        #     self.pbrl.graph.nodes[i]["fitness_cv"] = f * len(self.episodes[i])
-        # self.pbrl.graph.add_weighted_edges_from([(j, i, self.preferences[i,j]) for i in range(n) for j in range(n) if not np.isnan(self.preferences[i,j])])
-        # fitness = list(nx.get_node_attributes(self.pbrl.graph, "fitness").values())
-        # fitness_cv = list(nx.get_node_attributes(self.pbrl.graph, "fitness_cv").values())
-        # vmin, vmax = min(np.nanmin(fitness), np.nanmin(fitness_cv)), max(np.nanmax(fitness), np.nanmax(fitness_cv))
-        # Plot nodes
+    def show(self, figsize=(12, 12), model=None):
+        vmin, vmax = float("inf"), -float("inf")
+        if model is not None:
+            model_return = [self.model(ep["states"], ep["actions"], ep["next_states"]).sum() for _, ep in self.graph.nodes(data=True)]
+            vmin, vmax = min(vmin, min(model_return)), max(vmax, max(model_return))
+        else: model_return = None
+        try:
+            oracle_return = list(nx.get_node_attributes(self, "oracle_return").values())
+            vmin, vmax = min(vmin, min(oracle_return)), max(vmax, max(oracle_return))
+        except: oracle_return = None
+
+        """Outer colour by model return"""
         plt.figure(figsize=figsize)
         pos = nx.drawing.nx_agraph.graphviz_layout(self._graph, prog="neato")
         nx.draw_networkx_nodes(self._graph, pos=pos,
             node_size=500,
-            # node_color=fitness_cv,
-            # cmap="coolwarm_r", vmin=vmin, vmax=vmax
+            node_color=model_return if model_return is not None else "gray",
+            cmap="coolwarm_r", vmin=vmin, vmax=vmax
         )
+        """Inner colour by oracle return"""
         node_collection = nx.draw_networkx_nodes(self._graph, pos=pos,
             node_size=250,
-            # node_color=fitness,
-            # cmap="coolwarm_r", vmin=vmin, vmax=vmax,
+            node_color=oracle_return if oracle_return is not None else "gray",
+            cmap="coolwarm_r", vmin=vmin, vmax=vmax,
             linewidths=1, edgecolors="w"
         )
         nx.draw_networkx_labels(self._graph, pos=pos)
-        # Plot edges
+        """Edge colour by preference value"""
         edge_collection = nx.draw_networkx_edges(self._graph, pos=pos,
             node_size=500,
             width=2, arrowsize=20,
             edge_color=list(nx.get_edge_attributes(self._graph, "preference").values()),
             connectionstyle="arc3,rad=0.1",
-            edge_cmap=plt.cm.coolwarm_r
+            edge_cmap=plt.cm.coolwarm_r, edge_vmin=0., edge_vmax=1.
         )
         # weights = list(nx.get_edge_attributes(self._graph, "preference").values())
         # for i, e in enumerate(edge_collection): e.set_alpha(weights[i])

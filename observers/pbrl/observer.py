@@ -10,7 +10,8 @@ from torch import save as pt_save, load as pt_load, device, cuda
 
 class PbrlObserver:
     """
-    xxx
+    Class that manages the interactions between a preference graph, sampler, interface, model and agent
+    to enable online preference-based reinforcement learning. Intended to be as lightweight as possible.
     """
     def __init__(self, P, run_names=None):
         self.P = {} if P is None else P
@@ -34,7 +35,7 @@ class PbrlObserver:
             self._batch_num = 0
             self._n_on_prev_batch = 0
         self._current_ep = []
-        self._cum_rew_sum_or = 0.
+        self._cum_oracle_ret = 0.
     
     def link(self, agent):
         """
@@ -55,23 +56,26 @@ class PbrlObserver:
             
     def per_episode(self, ep_num):
         """
-        Operations to complete at the end of an episode, which may include adding self._current_ep
+        Operations to complete at the end of an episode, which may include adding this episode
         to the preference graph, creating logs, and (if self._online==True), occasionally gathering
         a preference batch and updating the reward model.
         """   
-        s, a, ns = self.graph.tensorise(self._current_ep)
+        states, actions, next_states = self.graph.tensorise(self._current_ep)
         self._current_ep = []
         logs = {}
+        ep_info = {"run_name": self.run_names[-1], "ep_num": ep_num}
         # Log reward sums
         if self.P["reward_source"] == "model": 
-            logs["reward_sum_model"] = self.model.fitness(s, a, ns)[0].item()
-        if self.interface is not None and self.interface.oracle is not None: 
-            logs["reward_sum_oracle"] = sum(self.interface.oracle(s, a, ns)).item()
-            self._cum_rew_sum_or += logs["reward_sum_oracle"]
-            logs["cumulative_reward_sum_oracle"] = self._cum_rew_sum_or
-        # Add episodes to the preference graph with a specified frequency
+            logs["model_return"] = self.model.fitness(states, actions, next_states)[0].item()
+        if self.interface is not None and self.interface.oracle is not None:
+            ep_info["oracle_rewards"] = self.interface.oracle(states, actions, next_states)
+            ep_info["oracle_return"] = logs["oracle_return"] = sum(ep_info["oracle_rewards"]).item()
+            self._cum_oracle_ret += logs["oracle_return"]
+            logs["cumulative_oracle_return"] = self._cum_oracle_ret
         if self._observing and (ep_num+1) % self.P["observe_freq"] == 0:
-            self.graph.add_episode(s, a, ns, run_name=self.run_names[-1], ep_num=ep_num)
+            # Add episodes to the preference graph with a specified frequency
+            # NOTE: Nodes are numbered as consecutive integers, ep_num stored in ep_info
+            self.graph.add_episode(states, actions, next_states, **ep_info)
         if self._online:
             if (ep_num+1) % self.P["feedback_freq"] == 0 and (ep_num+1) <= self.P["num_episodes_before_freeze"]:
                 # Calculate batch size.
