@@ -25,9 +25,9 @@ class Sampler:
         if self.P["weight"] == "uniform":
             n = len(self.graph); self.w = torch.zeros((n, n), device=self.device)
         else:
-            with torch.no_grad(): 
-                mu, var = torch.tensor([self.model.fitness(ep["states"], ep["actions"], ep["next_states"])
-                                        for _, ep in self.graph.nodes(data=True)], device=self.device).T
+            with torch.no_grad():
+                mu, var = torch.tensor([self.model.fitness(s, a, ns) for s, a, ns in zip(
+                                        self.graph.states, self.graph.actions, self.graph.next_states)], device=self.device).T
             if "ucb" in self.P["weight"]:
                 self.w = ucb_sum(mu, var, num_std=self.P["num_std"])
                 if self.P["weight"] == "ucb_r": self.w = -self.w # Invert

@@ -1,6 +1,6 @@
-from ...common.featuriser import Featuriser
-from ...common.networks import SequentialNetwork
-from ...common.utils import reparameterise
+from ..common.featuriser import Featuriser
+from ..common.networks import SequentialNetwork
+from ..common.utils import reparameterise
 
 import torch
 import numpy as np
@@ -12,6 +12,7 @@ import hyperrectangles as hr
 
 
 norm = torch.distributions.Normal(0, 1)
+mse_loss = torch.nn.MSELoss()
 bce_loss = torch.nn.BCELoss()
 
 # TODO: Split models out into separate files
@@ -55,36 +56,52 @@ class RewardNet(RewardModel):
         mu, var, _ = self._call_inner(features)
         return mu.sum(), var.sum()
 
-    def update(self, graph, history_key):
-        states, actions, next_states, A, i_list, j_list, y = graph.make_data_structures()
-        k_train, n_train = A.shape
-        if k_train == 0: print("=== None connected ==="); return {}
+    def update(self, graph, mode, history_key=None):
+        if mode == "reward":
+            states, actions, next_states = graph.states, graph.actions, graph.next_states
+            rewards = torch.cat([ep["oracle_rewards"] for _,ep in graph.nodes(data=True)])
+            k_train = len(rewards)
+        elif mode == "return":
+            states, actions, next_states = graph.states, graph.actions, graph.next_states
+            returns = torch.tensor([ep["oracle_return"] for _,ep in graph.nodes(data=True)], device=self.device)
+            k_train = len(returns)
+        elif mode == "preference":
+            states, actions, next_states, A, i_list, j_list, y = graph.preference_data_structures()
+            k_train, n_train = A.shape
+        if k_train == 0: print("=== No data for model update ==="); return {}
         # Featurising up-front may be faster if sampling many batches
         features = [self.featuriser(s, a, ns) for s, a, ns in zip(states, actions, next_states)]
+        features_cat = torch.cat(features)
         rng = np.random.default_rng()
         losses = []
         for _ in range(self.P["num_batches_per_update"]):
             batch = rng.choice(k_train, size=min(k_train, self.P["batch_size"]), replace=False)
-            A_batch, y_batch = A[batch], y[batch]
-            abs_A_batch = torch.abs(A_batch)
-            in_batch = abs_A_batch.sum(axis=0) > 0
-            F_pred, var_pred = torch.zeros(n_train, device=self.device), torch.zeros(n_train, device=self.device)
-            for i in range(n_train):
-                if in_batch[i]: F_pred[i], var_pred[i] = self.fitness(features=features[i])
-            if self.P["preference_eqn"] == "thurstone":
-                pair_diff = A_batch @ F_pred
-                sigma = torch.sqrt(abs_A_batch @ var_pred)
-                y_pred = norm.cdf(pair_diff / sigma)
-                loss = bce_loss(y_pred, y_batch) # Binary cross-entropy loss, PEBBLE equation 4
-            elif self.P["preference_eqn"] == "bradley-terry":
-                # https://github.com/rll-research/BPref/blob/f3ece2ecf04b5d11b276d9bbb19b8004c29429d1/reward_model.py#L142
-                F_pairs = torch.vstack([F_pred[[i_list[k], j_list[k]]] for k in batch])
-                log_y_pred = torch.nn.functional.log_softmax(F_pairs, dim=1)
-                loss = -(torch.column_stack([y_batch, 1-y_batch]) * log_y_pred).sum() / y_batch.shape[0]
+            if mode == "reward":
+                loss = mse_loss(self.net(features_cat[batch])[:,0], rewards[batch])
+            elif mode == "return":
+                loss = mse_loss(torch.stack([self.net(features[i])[:,0].sum() for i in batch]), returns[batch])
+            elif mode == "preference":
+                assert len(features) == n_train, "Not using subgraph s,a,ns?"
+                A_batch, y_batch = A[batch], y[batch]
+                abs_A_batch = torch.abs(A_batch)
+                in_batch = abs_A_batch.sum(axis=0) > 0
+                F_pred, var_pred = torch.zeros(n_train, device=self.device), torch.zeros(n_train, device=self.device)
+                for i in range(n_train):
+                    if in_batch[i]: F_pred[i], var_pred[i] = self.fitness(features=features[i])
+                if self.P["preference_eqn"] == "thurstone":
+                    pair_diff = A_batch @ F_pred
+                    sigma = torch.sqrt(abs_A_batch @ var_pred)
+                    y_pred = norm.cdf(pair_diff / sigma)
+                    loss = bce_loss(y_pred, y_batch) # Binary cross-entropy loss, PEBBLE equation 4
+                elif self.P["preference_eqn"] == "bradley-terry":
+                    # https://github.com/rll-research/BPref/blob/f3ece2ecf04b5d11b276d9bbb19b8004c29429d1/reward_model.py#L142
+                    F_pairs = torch.vstack([F_pred[[i_list[k], j_list[k]]] for k in batch])
+                    log_y_pred = torch.nn.functional.log_softmax(F_pairs, dim=1)
+                    loss = -(torch.column_stack([y_batch, 1-y_batch]) * log_y_pred).sum() / y_batch.shape[0]
             self.net.optimise(loss, retain_graph=False)
             losses.append(loss.item())
         # Normalise rewards to be negative on the training set, with unit standard deviation
-        with torch.no_grad(): all_rewards, _, _ = self._call_inner(torch.cat(features), normalise=False)
+        with torch.no_grad(): all_rewards, _, _ = self._call_inner(features_cat, normalise=False)
         self.shift, self.scale = all_rewards.max(), all_rewards.std()
         return {"preference_loss": np.mean(losses)}
 
@@ -133,13 +150,14 @@ class RewardTree(RewardModel):
         n = self.n(self.tree, states, actions, next_states)
         return n @ self.r, n @ torch.diag(self.var) @ n.T
 
-    def update(self, graph, history_key, reset_tree=True):
+    def update(self, graph, mode, history_key, reset_tree=True):
         assert reset_tree; trees = [self.make_tree() for _ in range(self.P["trees_per_update"])]
         histories = [{} for _ in range(self.P["trees_per_update"])]
         # Set factor for scaling rewards
         self._current_scale_factor = np.mean([len(ep["states"]) for _, ep in graph.nodes(data=True)])
         for tree, history in zip(trees, histories):
             if self.P["prune_ratio"] is not None:
+                raise NotImplementedError("Not implemented for mode in {reward, return}; implement ensembling using another class")
 
                 if self.P["nodewise_partition"]:
                     num_prune = int(round(len(graph) * min(max(0, self.P["prune_ratio"]), 1)))
@@ -171,9 +189,11 @@ class RewardTree(RewardModel):
                 # Evaluate using the eval_graph
                 history["loss"] = self.preference_loss(*self.make_loss_data_structures(tree, eval_graph))
             else:
-                if len(graph.edges) < 1: return {}
-                self.populate(tree, graph)
-                history["grow"], history["prune"] = self.grow(tree), self.prune(tree, graph)
+                assert self.P["trees_per_update"] == 1
+                if not self.populate(tree, graph, mode=mode):
+                    print("=== No data for model update ==="); return {}
+                history["grow"] = self.grow(tree)
+                history["prune"] = self.prune(tree, graph) if mode == "preference" else self.prune_mccp(tree)
                 history["loss"] = [l for m,l,_ in history["prune"] if m == len(tree)][0]
             history["m"] = len(tree)
 
@@ -188,29 +208,49 @@ class RewardTree(RewardModel):
         self._current_scale_factor = None
         return {"preference_loss": loss, "num_leaves": len(self.tree)}
 
-    def populate(self, tree, graph):
+    def populate(self, tree, graph, mode):
         """
-        Populate tree with all episodes in a preference graph. Compute least squares fitness estimates
-        for connected episodes, and apply uniform temporal prior to obtain reward targets.
+        Populate tree using a preference graph, computing reward targets differently depending on mode.
         """
-        states, actions, next_states, A, _, _, y = graph.make_data_structures()
-        ep_lengths = np.array([len(s) for s in states])
-        print("Computing maximum likelihood fitness...")
-        f, loss = maximum_likelihood_fitness(A, y, self.P["preference_eqn"])
-        print(f"Done (loss = {loss})")
-        # NOTE: scaling by episode lengths (making ep fitness correspond to sum not mean) causes weird behaviour
-        reward_target = f * self._current_scale_factor / ep_lengths
+        # ===========================
+        # COMMON WITH NET, TODO: Put into graph.make_data_structures?
+        if mode == "reward":
+            states, actions, next_states = graph.states, graph.actions, graph.next_states
+            rewards = torch.cat([ep["oracle_rewards"] for _,ep in graph.nodes(data=True)])
+            k_train = len(rewards)
+        elif mode == "return":
+            states, actions, next_states = graph.states, graph.actions, graph.next_states
+            returns = [ep["oracle_return"] for _,ep in graph.nodes(data=True)]
+            k_train = len(returns)
+        elif mode == "preference":
+            states, actions, next_states, A, _, _, y = graph.preference_data_structures()
+            k_train  = len(A)
+        if k_train == 0: return False
+        features = [self.featuriser(s, a, ns) for s, a, ns in zip(states, actions, next_states)]
+        features_cat = torch.cat(features)
+        # ==========================
+
+        ep_lengths = [len(s) for s in states]
+        if mode == "reward": rewards = rewards.cpu().numpy()
+        else:
+            if mode == "preference":
+                print("Computing maximum likelihood returns...")
+                returns, loss = maximum_likelihood_fitness(A, y, self.P["preference_eqn"])
+                returns *= self._current_scale_factor
+                print(f"Done (loss = {loss})")
+            # NOTE: scaling by episode lengths (making ep fitness correspond to sum not mean) causes weird behaviour
+            rewards = np.vstack([[g / l] * l for g, l in zip(returns, ep_lengths)])
+
+        # NOTE: ep_nums do not match graph.nodes because unconnected episodes have been removed
+        ep_nums = np.vstack([[i] * l for i, l in enumerate(ep_lengths)])
         # Populate space, then the tree itself
-        tree.space.data = np.hstack((
-            # NOTE: Indices do not match graph.nodes because unconnected episodes have been removed
-            self.featuriser(torch.cat(states), torch.cat(actions), torch.cat(next_states)).cpu().numpy(),
-            np.vstack([[[i, r]] * l for i, (r, l) in enumerate(zip(reward_target, ep_lengths))]),
-            ))
+        tree.space.data = np.hstack((features_cat.cpu().numpy(), ep_nums.reshape(-1,1), rewards.reshape(-1,1)))
         tree.populate()
+        return True
 
     def grow(self, tree):
         """
-        Given a populated tree, perform best-first splitting until m_max is reached.
+        Given a populated tree, perform best-first variance-based splitting until m_max is reached.
         """
         history = []
         def add_to_history(): history.append([len(tree), float("nan"), sum(tree.gather(("var_sum", "reward"))) / tree.root.num_samples])
@@ -258,9 +298,12 @@ class RewardTree(RewardModel):
             assert tree.prune_to(tree.leaves[x].parent) == {x, x+1}
         assert len(tree) == history[optimum][0]
         return history
+    
+    def prune_mccp(self, tree):
+        raise NotImplementedError
 
     def make_loss_data_structures(self, tree, graph):
-        states, actions, next_states, _, i_list, j_list, y = graph.make_data_structures(unconnected_ok=True)
+        states, actions, next_states, _, i_list, j_list, y = graph.preference_data_structures(unconnected_ok=True)
         mean, var = (np.array(attr) for attr in tree.gather(("mean","reward"), ("var","reward")))
         counts = np.vstack([self.n(tree, s, a, ns).cpu().numpy() for s, a, ns in zip(states, actions, next_states)])
         y = y.cpu().numpy()

@@ -44,6 +44,7 @@ class PreferenceGraph:
                tensor(array([ns for _,_,ns in s_a_ns_list]), device=self.device)
 
     def add_episode(self, states, actions, next_states, **kwargs):
+        # TODO: Storing both states and next_states is wasteful! Just store T+1 states alongside T actions
         self._graph.add_node(len(self._graph), states=states, actions=actions, next_states=next_states, **kwargs)
 
     def add_preference(self, i, j, preference, history_key=None):
@@ -53,9 +54,9 @@ class PreferenceGraph:
         assert type(preference) == float and 0. <= preference <= 1., f"Invalid preference value: {preference}"
         self._graph.add_edge(i, j, history_key=history_key, preference=preference)
 
-    def make_data_structures(self, unconnected_ok=False):
+    def preference_data_structures(self, unconnected_ok=False):
         """
-        Starting with the preference graph, assemble data structures needed for model updates.
+        Assemble data structures needed for preference-based model updates.
         """
         sg = self.subgraph(edges=self.edges) # Remove unconnected episodes
         if not(unconnected_ok) and len(sg) > 0:
@@ -73,7 +74,7 @@ class PreferenceGraph:
     def show(self, figsize=(12, 12), model=None):
         vmin, vmax = float("inf"), -float("inf")
         if model is not None:
-            model_return = [self.model(ep["states"], ep["actions"], ep["next_states"]).sum() for _, ep in self.graph.nodes(data=True)]
+            model_return = [self.model(s, a, ns).sum() for s, a, ns in zip(self.graph.states, self.graph.actions, self.graph.next_states)]
             vmin, vmax = min(vmin, min(model_return)), max(vmax, max(model_return))
         else: model_return = None
         try:
