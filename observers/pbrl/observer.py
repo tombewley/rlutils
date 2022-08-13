@@ -1,6 +1,6 @@
-from ...rewards.pbrl.graph import PreferenceGraph
-from ...rewards.pbrl.sampler import Sampler
-from ...rewards.pbrl.interactions import preference_batch
+from ...rewards.graph import PreferenceGraph
+from ...rewards.sampler import Sampler
+from ...rewards.interactions import preference_batch
 from ...rewards.epic import epic, epic_with_return
 from .explainer import Explainer
 
@@ -103,6 +103,7 @@ class PbrlObserver:
                 ))
                 logs.update(self.model.update(
                     graph=self.graph,
+                    mode="preference",
                     history_key=(ep_num+1)
                 ))
                 # If using oracle, measure alignment

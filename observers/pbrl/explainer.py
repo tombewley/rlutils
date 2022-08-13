@@ -1,4 +1,4 @@
-from ...rewards.pbrl.models import maximum_likelihood_fitness, least_squares_fitness
+from ...rewards.models import maximum_likelihood_fitness, least_squares_fitness
 
 from hyperrectangles.visualise import show_rectangles, show_samples
 import os
@@ -131,7 +131,7 @@ class Explainer:
 # VISUAL (LOCAL)
 
     def explain_episode_fitness(self, ep_num):
-        from ...rewards.pbrl.models import fitness_case_v
+        from ...rewards.models import fitness_case_v
         A, y, i_list, j_list, connected = self.pbrl.graph.construct_A_and_y()
         f, d, _ = fitness_case_v(A, y, self.pbrl.model.P["p_clip"])
         other_ep_num, target_fitness = [], []
