@@ -37,7 +37,6 @@ class PbrlObserver:
             if "offline_graph_path" in self.P:
                 self.offline_graph = pt_load(self.P["offline_graph_path"], map_location=self.graph.device)
                 self.offline_graph.device = self.graph.device
-                raise Exception
             else: self.offline_graph = None
         self._current_ep = []
     
