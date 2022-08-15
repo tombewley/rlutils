@@ -18,7 +18,7 @@ def epic(reward_functions, graph, num_canon=0, gamma=1.):
         canon_actions = all_actions[rng.choice(len(all_actions), size=num_canon, replace=False)]
         canon_next_states = all_next_states[rng.choice(len(all_next_states), size=num_canon, replace=False)]
     return epic_with_return(reward_functions,
-        graph.states, graph.actions, graph.next_states, canon_actions, canon_next_states)
+           graph.states, graph.actions, graph.next_states, canon_actions, canon_next_states)
 
 def preference_loss(reward_functions, graph, preference_eqn="bradley-terry", equal_band=0.):
     assert preference_eqn == "bradley-terry", "Thurstone not implemented"
@@ -52,6 +52,6 @@ def bt_loss_inner(normalised_diff, y, equal_band=0.):
     y_sign =      torch.sign(y_shift)      * (torch.abs(y_shift) > equal_band)
     y_pred_sign = torch.sign(y_pred_shift) * (torch.abs(y_pred_shift) > equal_band)
     loss_0_1 = torch.abs(y_sign - y_pred_sign).mean(dim=-1)
-    assert not(np.isnan(loss_bce).any()) and not(np.isinf(loss_bce).any())
-    assert not(np.isnan(loss_0_1).any()) and not(np.isinf(loss_0_1).any())
+    assert not(torch.isnan(loss_bce).any()) and not(torch.isinf(loss_bce).any())
+    assert not(torch.isnan(loss_0_1).any()) and not(torch.isinf(loss_0_1).any())
     return loss_bce, loss_0_1
