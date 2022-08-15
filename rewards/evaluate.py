@@ -34,7 +34,7 @@ def rank_correlation(reward_functions, graph):
     """
     Kendall's Tau-b rank correlation coefficient.
     """
-    return squareform(pdist(predict_returns(reward_functions, graph),
+    return squareform(pdist(predict_returns(reward_functions, graph).cpu().numpy(),
            metric=lambda a, b: kendalltau(a, b).correlation)) + np.identity(len(reward_functions))
 
 def predict_returns(reward_functions, graph):

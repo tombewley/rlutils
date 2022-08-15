@@ -227,18 +227,17 @@ class RewardTree(RewardModel):
         # ==========================
 
         ep_lengths = [len(s) for s in states] # NOTE: Unconnected episodes have been removed
-        ep_nums = np.vstack([[i] * l for i, l in enumerate(ep_lengths)])
-        if mode == "reward": rewards = rewards.cpu().numpy()
-        else:
+        ep_nums = torch.hstack([torch.tensor(i, device=self.device).expand(l) for i, l in enumerate(ep_lengths)])
+        if mode != "reward":
             if mode == "preference":
                 print("Computing maximum likelihood returns...")
                 returns, loss = maximum_likelihood_fitness(A, y, self.P["preference_eqn"])
                 returns *= self._mean_ep_length
                 print(f"Done (loss = {loss})")
             # NOTE: scaling by episode lengths (making ep fitness correspond to sum not mean) causes weird behaviour
-            rewards = np.vstack([[g / l] * l for g, l in zip(returns, ep_lengths)])
+            rewards = torch.hstack([(g / l).expand(l) for g, l in zip(returns, ep_lengths)])
         # Populate space, then the tree itself
-        tree.space.data = np.hstack((features_cat.cpu().numpy(), ep_nums.reshape(-1,1), rewards.reshape(-1,1)))
+        tree.space.data = torch.hstack((features_cat, ep_nums.unsqueeze(1), rewards.unsqueeze(1))).cpu().numpy()
         tree.populate()
         return True
 
@@ -349,8 +348,7 @@ def least_squares_fitness(A, y, p_clip, preference_eqn):
     if preference_eqn == "thurstone": d = norm.icdf(y)
     elif preference_eqn == "bradley-terry": raise NotImplementedError()
     f, residuals, _, _ = torch.linalg.lstsq(A.T @ A, A.T @ d, rcond=None) # NOTE: NumPy implementation seems to be more stable
-    # f = np.linalg.lstsq((A.T @ A).cpu().numpy(), (A.T @ d).cpu().numpy(), rcond=None)[0]
-    return (f - f.max()).cpu().numpy(), d, residuals # NOTE: Shift so that maximum fitness is zero (cost function)
+    return f - f.max(), d, residuals # NOTE: Shift so that maximum fitness is zero (cost function)
 
 def maximum_likelihood_fitness(A, y, preference_eqn, lr=0.1, epsilon=1e-5):
     """
@@ -371,4 +369,4 @@ def maximum_likelihood_fitness(A, y, preference_eqn, lr=0.1, epsilon=1e-5):
         opt.step()
         if torch.abs(new_loss - loss) < epsilon: break
         loss = new_loss; opt.zero_grad()
-    return ((f - f.max()) / f.std()).detach().cpu().numpy(), new_loss
+    return ((f - f.max()) / f.std()).detach(), new_loss
