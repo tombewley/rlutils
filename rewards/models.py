@@ -266,10 +266,10 @@ class RewardTree(RewardModel):
         """
         mean, var, counts, i_list, j_list, y = self.make_loss_data_structures(tree, graph)
         if eval_graph is None:
-            losses = [self.preference_loss(mean, var, counts, i_list, j_list, y) + (self.P["alpha"] * len(tree))]
+            losses = [self.preference_loss(mean, var, counts, i_list, j_list, y).item() + (self.P["alpha"] * len(tree))]
         else:
             _, _, eval_counts, eval_i_list, eval_j_list, eval_y = self.make_loss_data_structures(tree, eval_graph)
-            losses = [self.preference_loss(mean, var, eval_counts, eval_i_list, eval_j_list, eval_y) + (self.P["alpha"] * len(tree))]
+            losses = [self.preference_loss(mean, var, eval_counts, eval_i_list, eval_j_list, eval_y).item() + (self.P["alpha"] * len(tree))]
         subtree = tree.clone()
         r_d = tree.space.idxify("reward")
         history = []
@@ -289,7 +289,7 @@ class RewardTree(RewardModel):
                     eval_counts[:,x] += eval_counts[:,x+1]; eval_counts = np.delete(eval_counts, x+1, axis=1)
                     loss = self.preference_loss(mean, var, eval_counts, eval_i_list, eval_j_list, eval_y)
                 history.append({"prune_nodes": {x, x+1}})
-                losses.append(loss + (self.P["alpha"] * len(subtree)))
+                losses.append(loss.item() + (self.P["alpha"] * len(subtree)))
                 pbar.update(-1)
         # NOTE: Using reversed list to ensure *last* occurrence returned
         optimum = (len(losses)-1) - np.argmin(list(reversed(losses)))
