@@ -226,7 +226,8 @@ class RewardTree(RewardModel):
         features_cat = torch.cat(features)
         # ==========================
 
-        ep_lengths = graph.ep_lengths
+        ep_lengths = [len(s) for s in states] # NOTE: Unconnected episodes have been removed
+        ep_nums = np.vstack([[i] * l for i, l in enumerate(ep_lengths)])
         if mode == "reward": rewards = rewards.cpu().numpy()
         else:
             if mode == "preference":
@@ -236,9 +237,6 @@ class RewardTree(RewardModel):
                 print(f"Done (loss = {loss})")
             # NOTE: scaling by episode lengths (making ep fitness correspond to sum not mean) causes weird behaviour
             rewards = np.vstack([[g / l] * l for g, l in zip(returns, ep_lengths)])
-
-        # NOTE: ep_nums do not match graph.nodes because unconnected episodes have been removed
-        ep_nums = np.vstack([[i] * l for i, l in enumerate(ep_lengths)])
         # Populate space, then the tree itself
         tree.space.data = np.hstack((features_cat.cpu().numpy(), ep_nums.reshape(-1,1), rewards.reshape(-1,1)))
         tree.populate()
