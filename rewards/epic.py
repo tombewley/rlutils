@@ -1,4 +1,5 @@
 from torch import no_grad, vstack, stack, split, sqrt, corrcoef
+from numpy import matrix, sqrt as sqrt_np
 import networkx as nx
 from sklearn.manifold import MDS
 
@@ -41,16 +42,17 @@ def graph(corr):
     """Represent Pearson correlation matrix as an undirected networkx graph"""
     return nx.from_numpy_matrix(corr.cpu().numpy())
 
-def mds_layout(g):
-    """
-    Networkx graph layout using scikit-learn's multidimensional scaling tool
-    NOTE: Convert Pearson correlations to distances
-    """
+def mds_graph_layout(g):
+    """Networkx graph layout using scikit-learn's multidimensional scaling tool"""
     return MDS(max_iter=3000, eps=1e-9, dissimilarity="precomputed", n_init=10
               ).fit(corr_to_dist(nx.to_numpy_matrix(g))).embedding_
 
+def draw_graph(g, edgelist=None):
+    """Draw networkx graph representation of correlation matrix using MDS layout"""
+    nx.draw(g, pos=mds_graph_layout(g), node_size=0, with_labels=True, edgelist=edgelist)
+
 def corr_to_dist(corr):
-    return sqrt(0.5 * (1 - corr))
+    return (sqrt_np if type(corr) == matrix else sqrt)(0.5 * (1 - corr))
 
 if __name__ == "__main__":
     from torch import rand
@@ -73,5 +75,5 @@ if __name__ == "__main__":
     n_m = 50
 
     g = epic([r0,r1,r2,r3,r4,r5], rand(n_v, 3), rand(n_v, 2), rand(n_v, 3), rand(n_m, 2), rand(n_m, 3))
-    nx.draw(g, pos=mds_layout(g), with_labels=True, edgelist=[(4,5)])
+    nx.draw(g, pos=mds_graph_layout(g), with_labels=True, edgelist=[(4,5)])
     plt.show()

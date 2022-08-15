@@ -1,10 +1,10 @@
 from ..common.featuriser import Featuriser
 from ..common.networks import SequentialNetwork
 from ..common.utils import reparameterise
+from .evaluate import bt_loss_inner
 
 import torch
 import numpy as np
-from scipy.special import xlogy, xlog1py
 from scipy.stats import norm as norm_s
 from tqdm import tqdm
 from gym.spaces.space import Space
@@ -73,7 +73,6 @@ class RewardNet(RewardModel):
         features = [self.featuriser(s, a, ns) for s, a, ns in zip(states, actions, next_states)]
         features_cat = torch.cat(features)
         rng = np.random.default_rng()
-        losses = []
         for _ in range(self.P["num_batches_per_update"]):
             batch = rng.choice(k_train, size=min(k_train, self.P["batch_size"]), replace=False)
             if mode == "reward":
@@ -99,11 +98,10 @@ class RewardNet(RewardModel):
                     log_y_pred = torch.nn.functional.log_softmax(F_pairs, dim=1)
                     loss = -(torch.column_stack([y_batch, 1-y_batch]) * log_y_pred).sum() / y_batch.shape[0]
             self.net.optimise(loss, retain_graph=False)
-            losses.append(loss.item())
         # Normalise rewards to be negative on the training set, with unit standard deviation
         with torch.no_grad(): all_rewards, _, _ = self._call_inner(features_cat, normalise=False)
         self.shift, self.scale = all_rewards.max(), all_rewards.std()
-        return {"preference_loss": np.mean(losses)}
+        return {}
 
 
 class RewardTree(RewardModel):
@@ -153,8 +151,8 @@ class RewardTree(RewardModel):
     def update(self, graph, mode, history_key, reset_tree=True):
         assert reset_tree; trees = [self.make_tree() for _ in range(self.P["trees_per_update"])]
         histories = [{} for _ in range(self.P["trees_per_update"])]
-        # Set factor for scaling rewards
-        self._current_scale_factor = np.mean([len(ep["states"]) for _, ep in graph.nodes(data=True)])
+        # Set factor for scaling rewards when computing preference loss
+        self._mean_ep_length = np.mean(graph.ep_lengths)
         for tree, history in zip(trees, histories):
             if self.P["prune_ratio"] is not None:
                 raise NotImplementedError("Not implemented for mode in {reward, return}; implement ensembling using another class")
@@ -193,20 +191,18 @@ class RewardTree(RewardModel):
                 if not self.populate(tree, graph, mode=mode):
                     print("=== No data for model update ==="); return {}
                 history["grow"] = self.grow(tree)
-                history["prune"] = self.prune(tree, graph) if mode == "preference" else self.prune_mccp(tree)
-                history["loss"] = [l for m,l,_ in history["prune"] if m == len(tree)][0]
-            history["m"] = len(tree)
+                history["prune"], history["loss"] = self.prune(tree, graph) if mode == "preference" else self.prune_mccp(tree)
 
         i, loss = min([(i, h["loss"]) for i, h in enumerate(histories)], key=lambda x:x[1])
         self.tree = trees[i] # NOTE: This triggers tree.setter
         self.history[history_key] = histories[i]
 
-        print([(_i, h["m"], h["loss"]) for _i, h in enumerate(histories)])
+        print([(_i, h["loss"]) for _i, h in enumerate(histories)])
         print(i)
         print(self.rules(self.tree, pred_dims="reward", sf=5, dims_as_indices=False))
 
-        self._current_scale_factor = None
-        return {"preference_loss": loss, "num_leaves": len(self.tree)}
+        self._mean_ep_length = None
+        return {"num_leaves": len(self.tree)}
 
     def populate(self, tree, graph, mode):
         """
@@ -230,13 +226,13 @@ class RewardTree(RewardModel):
         features_cat = torch.cat(features)
         # ==========================
 
-        ep_lengths = [len(s) for s in states]
+        ep_lengths = graph.ep_lengths
         if mode == "reward": rewards = rewards.cpu().numpy()
         else:
             if mode == "preference":
                 print("Computing maximum likelihood returns...")
                 returns, loss = maximum_likelihood_fitness(A, y, self.P["preference_eqn"])
-                returns *= self._current_scale_factor
+                returns *= self._mean_ep_length
                 print(f"Done (loss = {loss})")
             # NOTE: scaling by episode lengths (making ep fitness correspond to sum not mean) causes weird behaviour
             rewards = np.vstack([[g / l] * l for g, l in zip(returns, ep_lengths)])
@@ -253,12 +249,16 @@ class RewardTree(RewardModel):
         Given a populated tree, perform best-first variance-based splitting until m_max is reached.
         """
         history = []
-        def add_to_history(): history.append([len(tree), float("nan"), sum(tree.gather(("var_sum", "reward"))) / tree.root.num_samples])
-        add_to_history()
         with tqdm(total=self.P["m_max"], initial=len(tree), desc="Splitting") as pbar:
             while len(tree) < self.P["m_max"] and len(tree.split_queue) > 0:
                 node = tree.split_next_best(self.P["min_samples_leaf"], self.P["num_from_queue"], self.P["store_all_qual"])
-                if node is not None: add_to_history(); pbar.update()
+                if node is not None:
+                    history.append({
+                        "split_node":      tree.leaves.index(node.left),
+                        "split_dim":       node.split_dim,
+                        "split_threshold": node.split_threshold
+                    })
+                    pbar.update()
         return history
 
     def prune(self, tree, graph, eval_graph=None):
@@ -267,15 +267,14 @@ class RewardTree(RewardModel):
         Optionally use a second eval_graph to determine the stopping condition.
         """
         mean, var, counts, i_list, j_list, y = self.make_loss_data_structures(tree, graph)
-        history = []
-        prune_indices = []
-        r_d = tree.space.idxify("reward")
-        subtree = tree.clone()
-        def add_to_history(loss): history.append([len(subtree), loss, sum(subtree.gather(("var_sum", "reward"))) / subtree.root.num_samples])
-        if eval_graph is not None:
+        if eval_graph is None:
+            losses = [self.preference_loss(mean, var, counts, i_list, j_list, y) + (self.P["alpha"] * len(tree))]
+        else:
             _, _, eval_counts, eval_i_list, eval_j_list, eval_y = self.make_loss_data_structures(tree, eval_graph)
-            add_to_history(self.preference_loss(mean, var, eval_counts, eval_i_list, eval_j_list, eval_y))
-        else: add_to_history(self.preference_loss(mean, var, counts, i_list, j_list, y))
+            losses = [self.preference_loss(mean, var, eval_counts, eval_i_list, eval_j_list, eval_y) + (self.P["alpha"] * len(tree))]
+        subtree = tree.clone()
+        r_d = tree.space.idxify("reward")
+        history = []
         with tqdm(total=len(tree), initial=len(tree), desc="Pruning") as pbar:
             while len(subtree) > 1:
                 prune_candidates = []
@@ -291,13 +290,16 @@ class RewardTree(RewardModel):
                 if eval_graph is not None:
                     eval_counts[:,x] += eval_counts[:,x+1]; eval_counts = np.delete(eval_counts, x+1, axis=1)
                     loss = self.preference_loss(mean, var, eval_counts, eval_i_list, eval_j_list, eval_y)
-                prune_indices.append(x); add_to_history(loss); pbar.update(-1)
+                history.append({"prune_nodes": {x, x+1}})
+                losses.append(loss + (self.P["alpha"] * len(subtree)))
+                pbar.update(-1)
         # NOTE: Using reversed list to ensure *last* occurrence returned
-        optimum = (len(history)-1) - np.argmin([l + (self.P["alpha"] * m) for m,l,_ in reversed(history)])
-        for x in prune_indices[:optimum]:
+        optimum = (len(losses)-1) - np.argmin(list(reversed(losses)))
+        for h in history[:optimum]:
+            x = min(h["prune_nodes"])
             assert tree.prune_to(tree.leaves[x].parent) == {x, x+1}
-        assert len(tree) == history[optimum][0]
-        return history
+        assert len(tree) == (len(losses) - optimum)
+        return history, losses[optimum]
     
     def prune_mccp(self, tree):
         raise NotImplementedError
@@ -306,7 +308,6 @@ class RewardTree(RewardModel):
         states, actions, next_states, _, i_list, j_list, y = graph.preference_data_structures(unconnected_ok=True)
         mean, var = (np.array(attr) for attr in tree.gather(("mean","reward"), ("var","reward")))
         counts = np.vstack([self.n(tree, s, a, ns).cpu().numpy() for s, a, ns in zip(states, actions, next_states)])
-        y = y.cpu().numpy()
         return mean, var, counts, i_list, j_list, y
 
     def preference_loss(self, mean, var, counts, i_list, j_list, y):
@@ -324,19 +325,13 @@ class RewardTree(RewardModel):
             pair_var[np.logical_and(pair_diff == 0, pair_var == 0)] = 1 # Handle 0/0 case
             y_pred = norm_s.cdf(pair_diff / np.sqrt(pair_var)) # Div/0 is fine
         elif self.P["preference_eqn"] == "bradley-terry":
-            y_pred = 1 / (1 + np.exp(-pair_diff / self._current_scale_factor))
-        if self.P["loss_func"] == "bce":
-            # Robust binary cross-entropy loss (https://stackoverflow.com/a/50024648)
-            loss = (-(xlogy(y, y_pred) + xlog1py(1 - y, -y_pred))).mean()
-        elif self.P["loss_func"] == "0-1":
-            # Modified 0-1 loss with a central band reserved for "equal" class
-            y_shift, y_pred_shift = y - 0.5, y_pred - 0.5
-            y_sign =      np.sign(y_shift)      * (np.abs(y_shift) > 0.1)
-            y_pred_sign = np.sign(y_pred_shift) * (np.abs(y_pred_shift) > 0.1)
-            loss = np.abs(y_sign - y_pred_sign).mean()
-        assert not np.isnan(loss)
-        assert not np.isinf(loss)
-        return loss
+            loss_bce, loss_0_1 = bt_loss_inner(
+                # NOTE: Awkward torch <-> numpy conversion
+                normalised_diff = torch.tensor(pair_diff / self._mean_ep_length, device=self.device).float(),
+                y = y,
+                equal_band=0.
+            )
+            return loss_bce if self.P["loss_func"] == "bce" else loss_0_1
 
     def n(self, tree, states, actions, next_states):
         assert len(states.shape) == 2

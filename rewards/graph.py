@@ -30,6 +30,8 @@ class PreferenceGraph:
     def actions(self): return [ep["actions"] for _,ep in self.nodes(data=True)]
     @property
     def next_states(self): return [ep["next_states"] for _,ep in self.nodes(data=True)]
+    @property
+    def ep_lengths(self): return [len(ep["actions"]) for _,ep in self.nodes(data=True)] # NOTE: So robust to future change to store T+1 states!
 
     @property
     def preference_matrix(self):

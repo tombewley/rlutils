@@ -1,7 +1,7 @@
 from ...rewards.graph import PreferenceGraph
 from ...rewards.sampler import Sampler
 from ...rewards.interactions import preference_batch
-from ...rewards.epic import epic, epic_with_return
+from ...rewards.evaluate import preference_loss, epic, rank_correlation
 from .explainer import Explainer
 
 import os
@@ -34,8 +34,10 @@ class PbrlObserver:
             self._num_batches = int(b)
             self._batch_num = 0
             self._n_on_prev_batch = 0
+            if "offline_graph_path" in self.P:
+                self.offline_graph = pt_load(self.P["offline_graph_path"], map_location=self.graph.device)
+            else: self.offline_graph = None
         self._current_ep = []
-        self._cum_oracle_ret = 0.
     
     def link(self, agent):
         """
@@ -70,8 +72,6 @@ class PbrlObserver:
         if self.interface is not None and self.interface.oracle is not None:
             ep_info["oracle_rewards"] = self.interface.oracle(states, actions, next_states)
             ep_info["oracle_return"] = logs["oracle_return"] = sum(ep_info["oracle_rewards"]).item()
-            self._cum_oracle_ret += logs["oracle_return"]
-            logs["cumulative_oracle_return"] = self._cum_oracle_ret
         if self._observing and (ep_num+1) % self.P["observe_freq"] == 0:
             # Add episodes to the preference graph with a specified frequency
             # NOTE: Nodes are numbered as consecutive integers, ep_num stored in ep_info
@@ -91,7 +91,7 @@ class PbrlObserver:
                     K = self.P["feedback_budget"] - len(self.graph.edges) # Remaining budget
                     B = self._num_batches - self._batch_num # Remaining number of batches
                     batch_size = int(round(K / B))
-                # Gather preferences and update reward model
+                # Gather preference batch
                 logs.update(preference_batch(
                     sampler=self.sampler,
                     interface=self.interface,
@@ -101,16 +101,25 @@ class PbrlObserver:
                     history_key=(ep_num+1),
                     budget=self.P["feedback_budget"]
                 ))
-                logs.update(self.model.update(
-                    graph=self.graph,
-                    mode="preference",
-                    history_key=(ep_num+1)
-                ))
-                # If using oracle, measure alignment
-                if self.interface.oracle is not None:
-                    corr_r, corr_g, _, _ = epic_with_return([self.interface.oracle, self.model], self.graph.states, self.graph.actions, self.graph.next_states)
-                    logs["reward_correlation"], logs["return_correlation"] = corr_r[0,1], corr_g[0,1]
-                self.relabel_memory() # If applicable, relabel the agent's replay memory using the updated reward
+                if self.graph.edges:
+                    # Update reward model
+                    logs.update(self.model.update(graph=self.graph, mode="preference", history_key=(ep_num+1)))
+                    # Evaluate by preference loss
+                    loss_bce, loss_0_1 = preference_loss([self.model], self.graph)
+                    logs["online_preference_loss_bce"], logs["online_preference_loss_0-1"] = loss_bce[0].item(), loss_0_1[0].item()
+                    if self.offline_graph is not None:
+                        loss_bce, loss_0_1 = preference_loss([self.model], self.offline_graph)
+                        logs["offline_preference_loss_bce"], logs["offline_preference_loss_0-1"] = loss_bce[0].item(), loss_0_1[0].item()
+                    if self.interface.oracle is not None:
+                        # Evaluate by return, reward and rank correlation correlation
+                        corr_r, corr_g, _, _ = epic([self.interface.oracle, self.model], self.graph)
+                        logs["online_reward_correlation"], logs["online_return_correlation"] = corr_r[0,1].item(), corr_g[0,1].item()
+                        logs["online_rank_correlation"] = rank_correlation([self.interface.oracle, self.model], self.graph)[0,1]
+                        if self.offline_graph is not None:
+                            corr_r, corr_g, _, _ = epic([self.interface.oracle, self.model], self.offline_graph)
+                            logs["offline_reward_correlation"], logs["offline_return_correlation"] = corr_r[0,1].item(), corr_g[0,1].item()
+                            logs["offline_rank_correlation"] = rank_correlation([self.interface.oracle, self.model], self.offline_graph)[0,1]
+                    self.relabel_memory() # If applicable, relabel the agent's replay memory using the updated reward
                 self._batch_num += 1 
                 self._n_on_prev_batch = len(self.graph)
             # Periodically log and save out
@@ -120,24 +129,23 @@ class PbrlObserver:
 
     def relabel_memory(self): pass
 
-    def save(self, history_key):
+    def save(self, history_key, zfill=4):
         path = f"{self.P['save_path']}/{self.run_names[-1]}"
         if not os.path.exists(path): os.makedirs(path)
-        pt_save({
-            "graph": self.graph,
-            "model": self.model
-        }, f"{path}/{history_key}.pbrl")
+        pt_save(self.graph, f"{path}/{str(history_key).zfill(zfill)}_{len(self.graph)}e_{len(self.graph.edges)}p.graph")
+        pt_save(self.model, f"{path}/{str(history_key).zfill(zfill)}.reward")
 
-def load(fname, P=None):
+def load(graph_fname=None, model_fname=None, P=None):
     """
     Make an instance of PbrlObserver from the information stored by the .save() method.
     """
     device_ = device("cuda" if cuda.is_available() else "cpu")
-    dict = pt_load(fname, device_)
     pbrl = PbrlObserver(P)
-    pbrl.graph = dict["graph"]
-    pbrl.model = dict["model"]
-    pbrl.graph.device = device_
-    if dict["model"] is not None: pbrl.model.device = device_
-    print(f"Loaded {fname}")
+    if graph_fname is not None:
+        pbrl.graph = pt_load(graph_fname, device_)
+        pbrl.graph.device = device_
+    if model_fname is not None:
+        pbrl.model = pt_load(model_fname, device_)
+        pbrl.model.device = device_
+    print(f"Loaded graph {graph_fname} and model {model_fname}")
     return pbrl
