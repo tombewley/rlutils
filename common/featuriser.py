@@ -14,7 +14,7 @@ class Featuriser:
         if "preprocessor" in self.P:
             states, actions, next_states = self.P["preprocessor"](states.clone(), actions.clone(), next_states.clone())
         if "features" not in self.P: 
-            return states, actions, next_states
+            return cat((states, actions, next_states), dim=-1)
         features = {}
         for func, name in zip(self.P["features"], self.names):
             features[name] = func(states, actions, next_states, features)

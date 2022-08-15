@@ -155,7 +155,7 @@ class RewardTree(RewardModel):
         self._mean_ep_length = np.mean(graph.ep_lengths)
         for tree, history in zip(trees, histories):
             if self.P["prune_ratio"] is not None:
-                raise NotImplementedError("Not implemented for mode in {reward, return}; implement ensembling using another class")
+                assert mode == "preference", "Not implemented for mode in {reward, return}; implement ensembling using another class"
 
                 if self.P["nodewise_partition"]:
                     num_prune = int(round(len(graph) * min(max(0, self.P["prune_ratio"]), 1)))
@@ -179,9 +179,9 @@ class RewardTree(RewardModel):
                 print(f"Eval graph: {len(eval_graph.edges)} preferences between {len(eval_graph)} episodes")
 
                 # Grow using the grow_graph
-                self.populate(tree, grow_graph)
+                self.populate(tree, grow_graph, mode=mode)
                 history["grow"] = self.grow(tree)
-                if self.P["post_populate_with_all"]: self.populate(tree, graph)
+                if self.P["post_populate_with_all"]: self.populate(tree, graph, mode=mode)
                 # Prune using the prune_graph
                 history["prune"] = self.prune(tree, prune_graph)#, eval_graph)
                 # Evaluate using the eval_graph
@@ -193,7 +193,7 @@ class RewardTree(RewardModel):
                 history["grow"] = self.grow(tree)
                 history["prune"], history["loss"] = self.prune(tree, graph) if mode == "preference" else self.prune_mccp(tree)
 
-        i, loss = min([(i, h["loss"]) for i, h in enumerate(histories)], key=lambda x:x[1])
+        i, _ = min([(i, h["loss"]) for i, h in enumerate(histories)], key=lambda x:x[1])
         self.tree = trees[i] # NOTE: This triggers tree.setter
         self.history[history_key] = histories[i]
 
