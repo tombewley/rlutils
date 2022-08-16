@@ -1,10 +1,10 @@
-from torch import no_grad, vstack, stack, split, sqrt, corrcoef
+from torch import no_grad, split, stack, hstack, vstack, sqrt, corrcoef
 from numpy import matrix, sqrt as sqrt_np
 import networkx as nx
 from sklearn.manifold import MDS
 
 
-def epic(reward_functions, states, actions, next_states, canon_actions=None, canon_next_states=None, gamma=1.):
+def epic(states, actions, next_states, reward_functions=None, rewards=None, canon_actions=None, canon_next_states=None, gamma=1.):
     """
     Equivalent-Policy Invariant Comparison (EPIC) pseudometric. From:
         Gleave, Adam et al. "Quantifying Differences in Reward Functions." ICLR 2021.
@@ -13,7 +13,7 @@ def epic(reward_functions, states, actions, next_states, canon_actions=None, can
     n_v = len(states)
     assert len(actions) == len(next_states) == n_v
     with no_grad():
-        rewards = stack([r(states, actions, next_states) for r in reward_functions])
+        if rewards is None: rewards = stack([r(states, actions, next_states) for r in reward_functions])
         if canon_actions is not None:
             # Compute canonicalised rewards, which are invariant to potential-based shaping
             means = stack([mean_rewards(r, vstack((states, next_states)), canon_actions, canon_next_states) for r in reward_functions])
@@ -21,9 +21,13 @@ def epic(reward_functions, states, actions, next_states, canon_actions=None, can
     # Compute all pairwise Pearson correlations
     return corrcoef(rewards), rewards
 
-def epic_with_return(reward_functions, states_by_ep, actions_by_ep, next_states_by_ep, canon_actions=None, canon_next_states=None, gamma=1.):
-    corr_r, rewards = epic(reward_functions, vstack(states_by_ep), vstack(actions_by_ep), vstack(next_states_by_ep), canon_actions, canon_next_states, gamma)
-    returns = stack([rewards_by_ep.sum(dim=1) for rewards_by_ep in split(rewards, [len(s) for s in states_by_ep], dim=1)], dim=1)
+def epic_with_return(states_by_ep, actions_by_ep, next_states_by_ep,
+                     reward_functions=None, rewards_by_ep=None, canon_actions=None, canon_next_states=None, gamma=1.):
+    corr_r, rewards = epic(vstack(states_by_ep), vstack(actions_by_ep), vstack(next_states_by_ep),
+                           reward_functions, None if rewards_by_ep is None else hstack(rewards_by_ep),
+                           canon_actions, canon_next_states, gamma)
+    if rewards_by_ep is None: rewards_by_ep = split(rewards, [len(s) for s in states_by_ep], dim=1)
+    returns = stack([r.sum(dim=1) for r in rewards_by_ep], dim=1)
     return corr_r, corrcoef(returns), rewards, returns 
 
 def mean_rewards(reward_function, states, actions, next_states):

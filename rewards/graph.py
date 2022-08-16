@@ -1,7 +1,7 @@
 import networkx as nx
 from numpy import array
 from numpy.random import default_rng
-from torch import tensor, float32, isnan, zeros, device, cuda
+from torch import tensor, float32, isnan, zeros, split, stack, hstack, vstack, no_grad, device, cuda
 import matplotlib.pyplot as plt
 
 
@@ -31,6 +31,8 @@ class PreferenceGraph:
     @property
     def next_states(self): return [ep["next_states"] for _,ep in self.nodes(data=True)]
     @property
+    def oracle_rewards(self): return [ep["oracle_rewards"] for _,ep in self.nodes(data=True)]
+    @property
     def ep_lengths(self): return [len(ep["actions"]) for _,ep in self.nodes(data=True)] # NOTE: So robust to future change to store T+1 states!
 
     @property
@@ -39,6 +41,13 @@ class PreferenceGraph:
         reverse = (1 - matrix).T; mask = ~isnan(reverse)
         matrix[mask] = reverse[mask]
         return matrix
+
+    def rewards_by_ep_and_returns(self, reward_functions=["oracle"]):
+        with no_grad():
+            rewards_by_ep = split(stack([hstack(self.oracle_rewards) if r == "oracle" else
+                            r(vstack(self.states), vstack(self.actions), vstack(self.next_states))
+                            for r in reward_functions]), self.ep_lengths, dim=1)
+            return rewards_by_ep, stack([r.sum(dim=1) for r in rewards_by_ep], dim=1)
 
     def tensorise(self, s_a_ns_list):
         return tensor(array([s  for s,_,__ in s_a_ns_list]), dtype=float32, device=self.device), \

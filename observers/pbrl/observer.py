@@ -105,21 +105,26 @@ class PbrlObserver:
                 if self.graph.edges:
                     # Update reward model
                     logs.update(self.model.update(graph=self.graph, mode="preference", history_key=(ep_num+1)))
+                    # Compute model rewards and returns just once to save computation
+                    online_rewards, online_returns = self.graph.rewards_by_ep_and_returns(
+                        [self.model] + ([] if self.interface.oracle is None else ["oracle"]))
                     # Evaluate by preference loss
-                    loss_bce, loss_0_1 = preference_loss([self.model], self.graph)
+                    loss_bce, loss_0_1 = preference_loss(self.graph, returns=online_returns[0].unsqueeze(0))
                     logs["online_preference_loss_bce"], logs["online_preference_loss_0-1"] = loss_bce[0].item(), loss_0_1[0].item()
                     if self.offline_graph is not None:
-                        loss_bce, loss_0_1 = preference_loss([self.model], self.offline_graph)
+                        offline_rewards, offline_returns = self.offline_graph.rewards_by_ep_and_returns(
+                            [self.model] + ([] if self.interface.oracle is None else ["oracle"]))
+                        loss_bce, loss_0_1 = preference_loss(self.offline_graph, returns=offline_returns[0].unsqueeze(0))
                         logs["offline_preference_loss_bce"], logs["offline_preference_loss_0-1"] = loss_bce[0].item(), loss_0_1[0].item()
                     if self.interface.oracle is not None:
                         # Evaluate by return, reward and rank correlation correlation
-                        corr_r, corr_g, _, _ = epic([self.interface.oracle, self.model], self.graph)
+                        corr_r, corr_g, _, _ = epic(self.graph, rewards_by_ep=online_rewards)
                         logs["online_reward_correlation"], logs["online_return_correlation"] = corr_r[0,1].item(), corr_g[0,1].item()
-                        logs["online_rank_correlation"] = rank_correlation([self.interface.oracle, self.model], self.graph)[0,1]
+                        logs["online_rank_correlation"] = rank_correlation(self.graph, returns=online_returns)[0,1]
                         if self.offline_graph is not None:
-                            corr_r, corr_g, _, _ = epic([self.interface.oracle, self.model], self.offline_graph)
+                            corr_r, corr_g, _, _ = epic(self.offline_graph, rewards_by_ep=offline_rewards)
                             logs["offline_reward_correlation"], logs["offline_return_correlation"] = corr_r[0,1].item(), corr_g[0,1].item()
-                            logs["offline_rank_correlation"] = rank_correlation([self.interface.oracle, self.model], self.offline_graph)[0,1]
+                            logs["offline_rank_correlation"] = rank_correlation(self.offline_graph, returns=offline_returns)[0,1]
                     self.relabel_memory() # If applicable, relabel the agent's replay memory using the updated reward
                 self._batch_num += 1 
                 self._n_on_prev_batch = len(self.graph)

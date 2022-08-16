@@ -5,10 +5,11 @@ from scipy.stats import kendalltau
 from .epic import epic_with_return
 
 
-def epic(reward_functions, graph, num_canon=0, gamma=1.):
+def epic(graph, reward_functions=None, rewards_by_ep=None, num_canon=0, gamma=1.):
     """
     Equivalent-Policy Invariant Comparison (EPIC) pseudometric.
     """
+    if rewards_by_ep is None: rewards_by_ep, _ = graph.rewards_by_ep_and_returns(reward_functions)
     if num_canon == 0:
         canon_actions, canon_next_states = None, None
     else:
@@ -17,31 +18,25 @@ def epic(reward_functions, graph, num_canon=0, gamma=1.):
         all_actions, all_next_states = torch.cat(graph.actions), torch.cat(graph.next_states)
         canon_actions = all_actions[rng.choice(len(all_actions), size=num_canon, replace=False)]
         canon_next_states = all_next_states[rng.choice(len(all_next_states), size=num_canon, replace=False)]
-    return epic_with_return(reward_functions,
-           graph.states, graph.actions, graph.next_states, canon_actions, canon_next_states)
+    return epic_with_return(graph.states, graph.actions, graph.next_states,
+           reward_functions, rewards_by_ep, canon_actions, canon_next_states)
 
-def preference_loss(reward_functions, graph, preference_eqn="bradley-terry", equal_band=0.):
+def preference_loss(graph, reward_functions=None, returns=None, preference_eqn="bradley-terry", equal_band=0.):
     assert preference_eqn == "bradley-terry", "Thurstone not implemented"
-    returns = predict_returns(reward_functions, graph)
+    if returns is None: _, returns = graph.rewards_by_ep_and_returns(reward_functions)
     return_diff = returns[:,[i for i,_ in graph.edges]] - returns[:,[j for _,j in graph.edges]]
     return bt_loss_inner(
         normalised_diff = return_diff / np.mean(graph.ep_lengths), # NOTE: Normalise by mean ep length
         y = torch.tensor([d["preference"] for _,_,d in graph.edges(data=True)], device=graph.device),
-        equal_band = equal_band
-    )
+        equal_band = equal_band)
 
-def rank_correlation(reward_functions, graph):
+def rank_correlation(graph, reward_functions=None, returns=None):
     """
     Kendall's Tau-b rank correlation coefficient.
     """
-    return squareform(pdist(predict_returns(reward_functions, graph).cpu().numpy(),
-           metric=lambda a, b: kendalltau(a, b).correlation)) + np.identity(len(reward_functions))
-
-def predict_returns(reward_functions, graph):
-    with torch.no_grad():
-        return torch.stack([rewards_by_ep.sum(dim=1) for rewards_by_ep in torch.split(torch.stack([
-               r(torch.vstack(graph.states), torch.vstack(graph.actions), torch.vstack(graph.next_states))
-               for r in reward_functions]), graph.ep_lengths, dim=1)], dim=1)
+    if returns is None: _, returns = graph.rewards_by_ep_and_returns(reward_functions)
+    return squareform(pdist(returns.cpu().numpy(), metric=lambda a, b: kendalltau(a, b).correlation)) \
+         + np.identity(len(returns))
 
 def bt_loss_inner(normalised_diff, y, equal_band=0.):
     y_pred = 1 / (1 + torch.exp(-normalised_diff))
