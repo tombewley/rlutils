@@ -9,16 +9,16 @@ from gym import wrappers
 P_DEFAULT = {"num_episodes": int(1e6), "render_freq": 1}
 
 
-def train(agent, P=P_DEFAULT, renderer=None, run_id=None, save_dir="agents"):
+def train(agent, P=P_DEFAULT, renderer=None, wandb_config=None, save_dir="agents"):
     """
     Shortcut for training; just calls deploy() with train=True.
     """
-    return deploy(agent, P, True, renderer, run_id, save_dir)
+    return deploy(agent, P, True, renderer, wandb_config, save_dir)
 
-def deploy(agent, P=P_DEFAULT, train=False, renderer=None, run_id=None, save_dir="agents"):
+def deploy(agent, P=P_DEFAULT, train=False, renderer=None, wandb_config=None, save_dir="agents"):
 
     do_extra = "do_extra" in P and P["do_extra"] # Whether or not to request extra predictions from the agent.
-    do_wandb = "wandb_monitor" in P and P["wandb_monitor"]
+    do_wandb = wandb_config is not None
     do_render = "render_freq" in P and P["render_freq"] > 0
     do_checkpoints = "checkpoint_freq" in P and P["checkpoint_freq"] > 0
     if "observers" not in P: P["observers"] = {}
@@ -27,13 +27,11 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, run_id=None, save_dir
         # Initialise Weights & Biases monitoring.
         assert not type(agent)==StableBaselinesAgent, "wandb monitoring not implemented for StableBaselinesAgent."
         import wandb
-        if run_id is None: run_id, resume = wandb.util.generate_id(), "never"
-        else: resume = "must"
-        run = wandb.init(
-            project=P["project_name"], 
-            id=run_id, 
-            resume=resume, 
-            monitor_gym="video_to_wandb" in P and P["video_to_wandb"],
+        if "id" not in wandb_config:
+            wandb_config["id"] = run_id = wandb.util.generate_id()
+            wandb_config["resume"] = "never"
+        else: wandb_config["resume"] = "must"
+        run = wandb.init(**wandb_config,
             config={**agent.P, **P, **{n: o.P for n, o in P["observers"].items()}})
         run_name = run.name
         # if train: # TODO: Weight monitoring causes an error with STEVE.
@@ -46,7 +44,7 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, run_id=None, save_dir
             # try: wandb.watch(agent.pi)
             # except: pass
     else:
-        import time; run_name = time.strftime("%Y-%m-%d_%H-%M-%S")
+        import time; run_id, run_name = None, time.strftime("%Y-%m-%d_%H-%M-%S")
 
     # Create directory for saving and tell observers what the run name is.
     if do_checkpoints: import os; save_dir += f"/{run_name}"; os.makedirs(save_dir, exist_ok=True) 
