@@ -1,4 +1,4 @@
-def preference_batch(sampler, interface, graph, batch_size, ij_min, history_key, budget=float("inf")):
+def preference_batch(sampler, interface, graph, batch_size, ij_min=0, history_key=None, budget=float("inf")):
     """
     Sample a batch of trajectory pairs, collect preferences via an interface, and add them to a graph.
     """

@@ -180,17 +180,17 @@ class RewardTree(RewardModel):
 
                 # Grow using the grow_graph
                 self.populate(tree, grow_graph, mode=mode)
-                history["grow"] = self.grow(tree)
+                history["grow"] = self.grow(tree, grow_graph)
                 if self.P["post_populate_with_all"]: self.populate(tree, graph, mode=mode)
                 # Prune using the prune_graph
                 history["prune"] = self.prune(tree, prune_graph)#, eval_graph)
                 # Evaluate using the eval_graph
                 history["loss"] = self.preference_loss(*self.make_loss_data_structures(tree, eval_graph))
             else:
-                assert self.P["trees_per_update"] == 1
+                assert self.P["split_dim_entropy"] > 0. or self.P["trees_per_update"] == 1
                 if not self.populate(tree, graph, mode=mode):
                     print("=== No data for model update ==="); return {}
-                history["grow"] = self.grow(tree)
+                history["grow"] = self.grow(tree, graph)
                 history["prune"], history["loss"] = self.prune(tree, graph) if mode == "preference" else self.prune_mccp(tree)
 
         i, _ = min([(i, h["loss"]) for i, h in enumerate(histories)], key=lambda x:x[1])
@@ -241,22 +241,123 @@ class RewardTree(RewardModel):
         tree.populate()
         return True
 
-    def grow(self, tree):
+    def grow(self, tree, graph):
         """
-        Given a populated tree, perform best-first variance-based splitting until m_max is reached.
+        Given a populated tree, perform best-first variance or preference-based splitting until m_max is reached.
         """
+        if self.P["split_by_preference"]:
+            # NOTE: graph must be the same one used to populate the tree!
+            tree.split_finder = self.preference_based_split_finder
+            mean, var, counts, self._i_list, self._j_list, self._y = self.make_loss_data_structures(tree, graph)
+            assert counts.shape[0] == 1; tree.root.counts = counts[0]
+            self._current_loss, self._current_pair_diff = self.preference_loss(mean, var, counts, self._i_list, self._j_list, self._y)
+            ep_d = tree.space.idxify("ep")
         history = []
         with tqdm(total=self.P["m_max"], initial=len(tree), desc="Splitting") as pbar:
             while len(tree) < self.P["m_max"] and len(tree.split_queue) > 0:
-                node = tree.split_next_best(self.P["min_samples_leaf"], self.P["num_from_queue"], self.P["store_all_qual"])
+                node = tree.split_next_best(self.P["min_samples_leaf"], self.P["num_from_queue"], self.P["split_dim_entropy"], self.P["store_all_qual"])
                 if node is not None:
+                    if self.P["split_by_preference"]:
+                        # Store counts in left and right children
+                        node.left.counts = np.zeros_like(node.counts)
+                        e, c = np.unique(np.rint(node.left.data(ep_d)).astype(int), return_counts=True)
+                        node.left.counts[e] = c
+                        node.right.counts = node.counts - node.left.counts
+                        # node.left.proxy_qual, node.right.proxy_qual = {}, {}
+                        # Calculate new loss, pair_diff and pair_var
+                        mean, var, counts = (np.array(attr)  for attr in tree.gather(("mean","reward"), ("var","reward"), "counts"))
+                        new_loss, self._current_pair_diff = self.preference_loss(mean, var, counts, self._i_list, self._j_list, self._y)
+                        # assert np.isclose(max(node.all_qual[node.split_dim]), self._current_loss - new_loss)
+                        self._current_loss = new_loss
+                        # NOTE: Empty split cache and recompute queue; necessary because split quality is not local
+                        tree._compute_split_queue()
+                    # Append to history
                     history.append({
                         "split_node":      tree.leaves.index(node.left),
                         "split_dim":       node.split_dim,
                         "split_threshold": node.split_threshold
                     })
                     pbar.update()
+        if self.P["split_by_preference"]:
+            # Wipe _underscore variables for safety; prevents further splitting except by calling this method
+            self._current_loss, self._current_pair_diff, self._current_pair_var = None, None, None
+            self._i_list, self._j_list, self._y = None, None, None
         return history
+
+    def preference_based_split_finder(self, node, split_dims, _, min_samples_leaf, store_all_qual):
+        """
+        Evaluate the quality of all valid splits of node along split_dim.
+        """
+        def increment_mean_and_var_sum(n, mean, var_sum, x, sign):
+            """
+            Welford's online algorithm for incremental sum-of-variance computation,
+            adapted from https://fanf2.user.srcf.net/hermes/doc/antiforgery/stats.pdf
+            """
+            d_last = x - mean
+            mean = mean + (sign * (d_last / n)) # Can't do += because this modifies the NumPy array in place!
+            d = x - mean
+            var_sum = var_sum + (sign * (d_last * d))
+            return mean, np.maximum(var_sum, 0) # Clip at zero
+        ep_d, r_d = node.space.idxify(["ep", "reward"])
+        ep_nums, rewards = np.moveaxis(node.space.data[node.sorted_indices[:,split_dims][:,:,None],[ep_d, r_d]], 2, 0)
+        ep_nums = np.rint(ep_nums).astype(int)
+        parent_mean = node.mean[r_d]
+        parent_var_sum = node.var_sum[r_d]
+        parent_num_samples = node.num_samples
+        parent_counts = node.counts
+        split_data = node.space.data[node.sorted_indices[:,split_dims],split_dims]
+        num_split_dims = split_data.shape[1]
+        all_qual = np.full_like(split_data, np.nan)
+        greedy_split_indices = np.full(num_split_dims, -1, dtype=np.int32)
+        for d in range(num_split_dims):
+
+            # === TODO: numba.jit this part ===
+
+            # Apply two kinds of constraint to the split points:
+            #   (1) Must be a "threshold" point where the samples either side do not have equal values
+            valid_split_indices = np.where(split_data[1:,d] - split_data[:-1,d])[0] + 1 # NOTE: 0 will not be included
+            #   (2) Must obey min_samples_leaf
+            mask = np.logical_and(valid_split_indices >= min_samples_leaf, valid_split_indices <= parent_num_samples-min_samples_leaf)
+            valid_split_indices = valid_split_indices[mask]
+            # Cannot split on a dim if there are no valid split points
+            if len(valid_split_indices) == 0: continue
+            max_num_left = valid_split_indices[-1] + 1 # +1 needed
+            mean = np.zeros((2, max_num_left))
+            var_sum = mean.copy()
+            mean[1,0] = parent_mean
+            var_sum[1,0] = parent_var_sum
+            counts = np.zeros((2, max_num_left, parent_counts.shape[0]), dtype=int)
+            counts[1,0] = parent_counts
+            num_left_range = np.arange(max_num_left)
+            num_range = np.stack((num_left_range, parent_num_samples - num_left_range), axis=0)
+            for num_left, num_right in num_range[:,1:].T:
+                ep_num, reward = ep_nums[num_left-1,d], rewards[num_left-1,d]
+                mean[0,num_left], var_sum[0,num_left] = increment_mean_and_var_sum(num_left,  mean[0,num_left-1], var_sum[0,num_left-1], reward, 1)
+                mean[1,num_left], var_sum[1,num_left] = increment_mean_and_var_sum(num_right, mean[1,num_left-1], var_sum[1,num_left-1], reward, -1)
+                counts[:,num_left] = counts[:,num_left-1] # Copy
+                counts[0,num_left,ep_num] = counts[0,num_left-1,ep_num] + 1 # Update
+                counts[1,num_left,ep_num] = counts[1,num_left-1,ep_num] - 1
+
+            # === END ===
+
+            # node.proxy_qual[split_dims[d]] = var_sum[1,0] - var_sum[:,valid_split_indices].sum(axis=0)
+            num_range[0,0] = 1 # Prevent div/0 warning
+            loss, _ = self.preference_loss(mean, var_sum / num_range, counts, self._i_list, self._j_list, self._y, split_mode=True)
+            all_qual[valid_split_indices,d] = self._current_loss - loss[valid_split_indices]
+            # Greedy split is the one with the highest quality
+            greedy = np.argmax(all_qual[valid_split_indices,d])
+            greedy_split_indices[d] = valid_split_indices[greedy]
+        splits = []
+        for split_dim, split_index in zip(split_dims, greedy_split_indices):
+            if split_index >= 0: # NOTE: Default is -1 if no valid_split_indices
+                splits.append((split_dim, split_index, all_qual[split_index,split_dim]))
+        # If applicable, store all split thresholds and quality values
+        if store_all_qual:
+            node.all_split_thresholds, node.all_qual = {}, {}
+            for d in range(len(split_dims)):
+                node.all_split_thresholds[split_dims[d]] = (split_data[:-1,d] + split_data[1:,d]) / 2
+                node.all_qual[split_dims[d]] = all_qual[1:,d]
+        return splits, np.array([])
 
     def prune(self, tree, graph, eval_graph=None):
         """
@@ -265,10 +366,10 @@ class RewardTree(RewardModel):
         """
         mean, var, counts, i_list, j_list, y = self.make_loss_data_structures(tree, graph)
         if eval_graph is None:
-            losses = [self.preference_loss(mean, var, counts, i_list, j_list, y).item() + (self.P["alpha"] * len(tree))]
+            losses = [self.preference_loss(mean, var, counts, i_list, j_list, y)[0].item() + (self.P["alpha"] * len(tree))]
         else:
             _, _, eval_counts, eval_i_list, eval_j_list, eval_y = self.make_loss_data_structures(tree, eval_graph)
-            losses = [self.preference_loss(mean, var, eval_counts, eval_i_list, eval_j_list, eval_y).item() + (self.P["alpha"] * len(tree))]
+            losses = [self.preference_loss(mean, var, eval_counts, eval_i_list, eval_j_list, eval_y)[0].item() + (self.P["alpha"] * len(tree))]
         subtree = tree.clone()
         r_d = tree.space.idxify("reward")
         history = []
@@ -279,14 +380,14 @@ class RewardTree(RewardModel):
                     parent = tree.leaves[x].parent
                     m = np.delete(mean,   x, axis=0); m[x] = parent.mean[r_d]
                     v = np.delete(var,    x, axis=0); v[x] = parent.cov[r_d,r_d]
-                    c = np.delete(counts, x, axis=1); c[:,x] = counts[:,x] + counts[:,x+1]
-                    loss = self.preference_loss(m, v, c, i_list, j_list, y)
+                    c = np.delete(counts, x, axis=0); c[x] = counts[x] + counts[x+1]
+                    loss, _ = self.preference_loss(m, v, c, i_list, j_list, y)
                     prune_candidates.append((x, m, v, c, loss))
                 x, mean, var, counts, loss = sorted(prune_candidates, key=lambda cand: cand[4])[0]
                 assert subtree.prune_to(subtree.leaves[x].parent) == {x, x+1}
                 if eval_graph is not None:
-                    eval_counts[:,x] += eval_counts[:,x+1]; eval_counts = np.delete(eval_counts, x+1, axis=1)
-                    loss = self.preference_loss(mean, var, eval_counts, eval_i_list, eval_j_list, eval_y)
+                    eval_counts[x] += eval_counts[x+1]; eval_counts = np.delete(eval_counts, x+1, axis=0)
+                    loss, _ = self.preference_loss(mean, var, eval_counts, eval_i_list, eval_j_list, eval_y)
                 history.append({"prune_nodes": {x, x+1}})
                 losses.append(loss.item() + (self.P["alpha"] * len(subtree)))
                 pbar.update(-1)
@@ -304,21 +405,34 @@ class RewardTree(RewardModel):
     def make_loss_data_structures(self, tree, graph):
         states, actions, next_states, _, i_list, j_list, y = graph.preference_data_structures(unconnected_ok=True)
         mean, var = (np.array(attr) for attr in tree.gather(("mean","reward"), ("var","reward")))
-        counts = np.vstack([self.n(tree, s, a, ns).cpu().numpy() for s, a, ns in zip(states, actions, next_states)])
+        counts = np.hstack([self.n(tree, s, a, ns).unsqueeze(1).cpu().numpy() for s, a, ns in zip(states, actions, next_states)])
         return mean, var, counts, i_list, j_list, y
 
-    def preference_loss(self, mean, var, counts, i_list, j_list, y):
+    def preference_loss(self, mean, var, counts, i_list, j_list, y, split_mode=False):
         """
         Compute preference loss given vectors of per-component means and variances,
         and a matrix of counts for each episode-component pair.
+        In split mode, these arrays each have an extra dimension (all possible split locations)
+        but only two rows (left and right), and we need to add self._current_pair_diff and
+        self._current_pair_var to compute the global loss.
         """
-        assert len(mean.shape) == len(var.shape) == 1 and len(counts.shape) == 2
-        assert mean.shape[0] == var.shape[0] == counts.shape[1]
-        i_counts, j_counts = counts[i_list], counts[j_list]
-        pair_diff = (mean * (i_counts - j_counts)).sum(axis=1)
+        assert mean.shape[0] == var.shape[0] == counts.shape[0]
+        if split_mode:
+            assert len(mean.shape) == len(var.shape) == 2 and len(counts.shape) == 3 and counts.shape[0] == 2
+        else:
+            assert len(mean.shape) == len(var.shape) == 1 and len(counts.shape) == 2
+            mean, var, counts = np.expand_dims(mean, 1), np.expand_dims(var, 1), np.expand_dims(counts, 1)
+        i_counts = counts[:,:,i_list]
+        j_counts = counts[:,:,j_list]
+        pair_diff = (np.expand_dims(mean, 2) * (i_counts - j_counts)).sum(axis=0)
+        if split_mode: # Need to add pair_diff contribution from the rest of the tree
+            assert self._current_pair_diff.shape == pair_diff[0].shape
+            # pair_diff[0] is contribution of this node to totals pre-splitting
+            pair_diff += self._current_pair_diff - pair_diff[0]
         if self.P["preference_eqn"] == "thurstone":
             raise NotImplementedError("Apply scale factor")
-            pair_var = (var * (i_counts**2 + j_counts**2)).sum(axis=1)
+            pair_var = (np.expand_dims(var, 2) * (i_counts**2 + j_counts**2)).sum(axis=0)
+            if split_mode: pair_var = np.maximum(pair_var + self._current_pair_var - pair_var[0], 0) # Clip at zero
             pair_var[np.logical_and(pair_diff == 0, pair_var == 0)] = 1 # Handle 0/0 case
             y_pred = norm_s.cdf(pair_diff / np.sqrt(pair_var)) # Div/0 is fine
         elif self.P["preference_eqn"] == "bradley-terry":
@@ -328,7 +442,7 @@ class RewardTree(RewardModel):
                 y = y,
                 equal_band=0.
             )
-            return loss_bce if self.P["loss_func"] == "bce" else loss_0_1
+        return (loss_bce if self.P["loss_func"] == "bce" else loss_0_1), pair_diff[0] #, pair_var[0]
 
     def n(self, tree, states, actions, next_states):
         assert len(states.shape) == 2
