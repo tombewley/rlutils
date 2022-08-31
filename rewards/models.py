@@ -5,6 +5,7 @@ from .evaluate import bt_loss_inner
 
 import torch
 import numpy as np
+import numba
 from scipy.stats import norm as norm_s
 from tqdm import tqdm
 from gym.spaces.space import Space
@@ -23,6 +24,11 @@ class RewardModel:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.P = P
         self.featuriser = Featuriser(self.P["featuriser"])
+        self.seed()
+
+    def seed(self, seed=None):
+        self.pt_rng_seed = seed # Making self.pt_rng here would prevent pickling
+        self.np_rng = np.random.default_rng(seed)
 
     def __call__(self, states, actions, next_states):
         mu, _, std = self._call_inner(self.featuriser(states, actions, next_states))
@@ -72,9 +78,8 @@ class RewardNet(RewardModel):
         # Featurising up-front may be faster if sampling many batches
         features = [self.featuriser(s, a, ns) for s, a, ns in zip(states, actions, next_states)]
         features_cat = torch.cat(features)
-        rng = np.random.default_rng()
         for _ in range(self.P["num_batches_per_update"]):
-            batch = rng.choice(k_train, size=min(k_train, self.P["batch_size"]), replace=False)
+            batch = self.np_rng.choice(k_train, size=min(k_train, self.P["batch_size"]), replace=False)
             if mode == "reward":
                 loss = mse_loss(self.net(features_cat[batch])[:,0], rewards[batch])
             elif mode == "return":
@@ -185,7 +190,7 @@ class RewardTree(RewardModel):
                 # Prune using the prune_graph
                 history["prune"] = self.prune(tree, prune_graph)#, eval_graph)
                 # Evaluate using the eval_graph
-                history["loss"] = self.preference_loss(*self.make_loss_data_structures(tree, eval_graph))
+                history["loss"], _ = self.preference_loss(*self.make_loss_data_structures(tree, eval_graph))
             else:
                 assert self.P["split_dim_entropy"] > 0. or self.P["trees_per_update"] == 1
                 if not self.populate(tree, graph, mode=mode):
@@ -231,7 +236,7 @@ class RewardTree(RewardModel):
         if mode != "reward":
             if mode == "preference":
                 print("Computing maximum likelihood returns...")
-                returns, loss = maximum_likelihood_fitness(A, y, self.P["preference_eqn"])
+                returns, loss = self.maximum_likelihood_fitness(A, y)
                 returns *= self._mean_ep_length
                 print(f"Done (loss = {loss})")
             # NOTE: scaling by episode lengths (making ep fitness correspond to sum not mean) causes weird behaviour
@@ -247,7 +252,8 @@ class RewardTree(RewardModel):
         """
         if self.P["split_by_preference"]:
             # NOTE: graph must be the same one used to populate the tree!
-            tree.split_finder = self.preference_based_split_finder
+            # tree.split_finder = self.preference_based_split_finder
+            tree.split_finder = self.preference_based_split_finder_fast_0_1
             mean, var, counts, self._i_list, self._j_list, self._y = self.make_loss_data_structures(tree, graph)
             assert counts.shape[0] == 1; tree.root.counts = counts[0]
             self._current_loss, self._current_pair_diff = self.preference_loss(mean, var, counts, self._i_list, self._j_list, self._y)
@@ -263,7 +269,6 @@ class RewardTree(RewardModel):
                         e, c = np.unique(np.rint(node.left.data(ep_d)).astype(int), return_counts=True)
                         node.left.counts[e] = c
                         node.right.counts = node.counts - node.left.counts
-                        # node.left.proxy_qual, node.right.proxy_qual = {}, {}
                         # Calculate new loss, pair_diff and pair_var
                         mean, var, counts = (np.array(attr)  for attr in tree.gather(("mean","reward"), ("var","reward"), "counts"))
                         new_loss, self._current_pair_diff = self.preference_loss(mean, var, counts, self._i_list, self._j_list, self._y)
@@ -310,9 +315,6 @@ class RewardTree(RewardModel):
         all_qual = np.full_like(split_data, np.nan)
         greedy_split_indices = np.full(num_split_dims, -1, dtype=np.int32)
         for d in range(num_split_dims):
-
-            # === TODO: numba.jit this part ===
-
             # Apply two kinds of constraint to the split points:
             #   (1) Must be a "threshold" point where the samples either side do not have equal values
             valid_split_indices = np.where(split_data[1:,d] - split_data[:-1,d])[0] + 1 # NOTE: 0 will not be included
@@ -337,16 +339,38 @@ class RewardTree(RewardModel):
                 counts[:,num_left] = counts[:,num_left-1] # Copy
                 counts[0,num_left,ep_num] = counts[0,num_left-1,ep_num] + 1 # Update
                 counts[1,num_left,ep_num] = counts[1,num_left-1,ep_num] - 1
-
-            # === END ===
-
-            # node.proxy_qual[split_dims[d]] = var_sum[1,0] - var_sum[:,valid_split_indices].sum(axis=0)
             num_range[0,0] = 1 # Prevent div/0 warning
             loss, _ = self.preference_loss(mean, var_sum / num_range, counts, self._i_list, self._j_list, self._y, split_mode=True)
             all_qual[valid_split_indices,d] = self._current_loss - loss[valid_split_indices]
             # Greedy split is the one with the highest quality
             greedy = np.argmax(all_qual[valid_split_indices,d])
             greedy_split_indices[d] = valid_split_indices[greedy]
+        splits = []
+        for split_dim, split_index in zip(split_dims, greedy_split_indices):
+            if split_index >= 0: # NOTE: Default is -1 if no valid_split_indices
+                splits.append((split_dim, split_index, all_qual[split_index,split_dim]))
+        # If applicable, store all split thresholds and quality values
+        if store_all_qual:
+            node.all_split_thresholds, node.all_qual = {}, {}
+            for d in range(len(split_dims)):
+                node.all_split_thresholds[split_dims[d]] = (split_data[:-1,d] + split_data[1:,d]) / 2
+                node.all_qual[split_dims[d]] = all_qual[1:,d]
+        return splits, np.array([])
+
+    def preference_based_split_finder_fast_0_1(self, node, split_dims, _, min_samples_leaf, store_all_qual):
+        """
+        Evaluate the quality of all valid splits of node along split_dim.
+        """
+        ep_d, r_d = node.space.idxify(["ep", "reward"])
+        split_data = node.space.data[node.sorted_indices[:,split_dims],split_dims]
+        ep_nums, rewards = np.moveaxis(node.space.data[node.sorted_indices[:,split_dims][:,:,None],[ep_d, r_d]], 2, 0)
+        ep_nums = np.rint(ep_nums).astype(int)
+        all_qual, greedy_split_indices = _pbsf_0_1_inner( # TODO: Don't convert types here!
+            split_data, ep_nums, rewards, min_samples_leaf,
+            node.mean[r_d], node.counts,
+            np.array(self._i_list), np.array(self._j_list),
+            np.sign(self._y.cpu().numpy() - 0.5), self._current_pair_diff, self._current_loss.item()
+        )
         splits = []
         for split_dim, split_index in zip(split_dims, greedy_split_indices):
             if split_index >= 0: # NOTE: Default is -1 if no valid_split_indices
@@ -450,6 +474,30 @@ class RewardTree(RewardModel):
         for x in tree.get_leaf_nums(self.featuriser(states, actions, next_states).cpu().numpy()): n[x] += 1
         return n
 
+    def maximum_likelihood_fitness(self, A, y, lr=0.1, epsilon=1e-5):
+        """
+        Construct maximum likelihood fitness estimates under the specified preference equation.
+        Normalise fitness to be negative on the training set, with unit standard deviation.
+        https://apps.dtic.mil/sti/pdfs/ADA543806.pdf.
+        """
+        # Initialise with samples from standard normal
+        pt_rng = torch.Generator(device=self.device)
+        pt_rng.manual_seed(self.pt_rng_seed)
+        f = torch.normal(torch.zeros(A.shape[1]), torch.ones(A.shape[1]), generator=pt_rng).to(A.device)
+        f.requires_grad = True
+        opt = torch.optim.Adam([f], lr=lr)
+        loss = float("inf")
+        while True:
+            pair_diff = A @ f
+            if self.P["preference_eqn"] == "thurstone": y_pred = norm.cdf(pair_diff)
+            elif self.P["preference_eqn"] == "bradley-terry": y_pred = 1 / (1 + torch.exp(-pair_diff))
+            new_loss = bce_loss(y_pred, y)
+            new_loss.backward()
+            opt.step()
+            if torch.abs(new_loss - loss) < epsilon: break
+            loss = new_loss; opt.zero_grad()
+        return ((f - f.max()) / f.std()).detach(), new_loss
+
 # ==============================================================================
 # UTILITIES
 
@@ -464,23 +512,46 @@ def least_squares_fitness(A, y, p_clip, preference_eqn):
     f, residuals, _, _ = torch.linalg.lstsq(A.T @ A, A.T @ d, rcond=None) # NOTE: NumPy implementation seems to be more stable
     return f - f.max(), d, residuals # NOTE: Shift so that maximum fitness is zero (cost function)
 
-def maximum_likelihood_fitness(A, y, preference_eqn, lr=0.1, epsilon=1e-5):
+
+@numba.jit(nopython=True, cache=True, parallel=True)
+def _pbsf_0_1_inner(split_data, ep_nums, rewards, min_samples_leaf, parent_mean, parent_counts,
+                    i_list, j_list, y_sign, current_pair_diff, current_loss):
     """
-    Construct maximum likelihood fitness estimates under the specified preference equation.
-    Normalise fitness to be negative on the training set, with unit standard deviation.
-    https://apps.dtic.mil/sti/pdfs/ADA543806.pdf.
+    Jitted inner function for preference-based split finding with the 0-1 loss.
     """
-    f = norm.sample((A.shape[1],)).to(A.device) # Initialise with samples from standard normal
-    f.requires_grad = True
-    opt = torch.optim.Adam([f], lr=lr)
-    loss = float("inf")
-    while True:
-        pair_diff = A @ f
-        if preference_eqn == "thurstone": y_pred = norm.cdf(pair_diff)
-        elif preference_eqn == "bradley-terry": y_pred = 1 / (1 + torch.exp(-pair_diff))
-        new_loss = bce_loss(y_pred, y)
-        new_loss.backward()
-        opt.step()
-        if torch.abs(new_loss - loss) < epsilon: break
-        loss = new_loss; opt.zero_grad()
-    return ((f - f.max()) / f.std()).detach(), new_loss
+    num_samples, num_split_dims = split_data.shape
+    all_qual = np.full_like(split_data, np.nan)
+    greedy_split_indices = np.full(num_split_dims, -1, dtype=np.int32)
+    for d in numba.prange(num_split_dims):
+        # Apply two kinds of constraint to the split points:
+        #   (1) Must be a "threshold" point where the samples either side do not have equal values
+        valid_split_indices = np.where(split_data[1:,d] - split_data[:-1,d])[0] + 1 # NOTE: 0 will not be included
+        #   (2) Must obey min_samples_leaf
+        mask = np.logical_and(valid_split_indices >= min_samples_leaf, valid_split_indices <= num_samples-min_samples_leaf)
+        valid_split_indices = valid_split_indices[mask]
+        # Cannot split on a dim if there are no valid split points
+        if len(valid_split_indices) == 0: continue
+        max_num_left = valid_split_indices[-1] + 1 # +1 needed
+        mean = np.zeros((2, max_num_left))
+        counts = np.zeros((2, max_num_left, parent_counts.shape[0]))
+        mean[1,0] = parent_mean
+        counts[1,0] = parent_counts
+        for num_left in range(1, max_num_left): # Need to start at 1 for incremental calculation to work
+            num_right = num_samples - num_left
+            ep_num, reward = ep_nums[num_left-1,d], rewards[num_left-1,d]
+            mean[0,num_left] = mean[0,num_left-1] + ((reward - mean[0,num_left-1]) / num_left)
+            mean[1,num_left] = mean[1,num_left-1] - ((reward - mean[1,num_left-1]) / num_right)
+            counts[:,num_left] = counts[:,num_left-1] # Copy
+            counts[0,num_left,ep_num] = counts[0,num_left-1,ep_num] + 1 # Update
+            counts[1,num_left,ep_num] = counts[1,num_left-1,ep_num] - 1
+        k = len(y_sign)
+        pair_diff = np.empty((max_num_left, k))
+        for k_ in numba.prange(k): # A little clunky but avoids np.expand_dims which doesn't work
+            pair_diff[:,k_] = (mean * (counts[:,:,i_list[k_]] - counts[:,:,j_list[k_]])).sum(axis=0)
+        pair_diff = pair_diff + current_pair_diff - pair_diff[0]
+        loss = np.abs(y_sign - np.sign(pair_diff)).sum(axis=-1) / k
+        all_qual[valid_split_indices,d] = current_loss - loss[valid_split_indices]
+        # Greedy split is the one with the highest quality
+        greedy = np.argmax(all_qual[valid_split_indices,d])
+        greedy_split_indices[d] = valid_split_indices[greedy]
+    return all_qual, greedy_split_indices
