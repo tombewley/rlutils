@@ -26,7 +26,7 @@ class Sampler:
             n = len(self.graph); self.w = torch.zeros((n, n), device=self.device)
         else:
             with torch.no_grad():
-                mu, var = torch.tensor([self.model.fitness(s, a, ns) for s, a, ns in zip(
+                mu, var = torch.tensor([self.model.return_with_var(s, a, ns) for s, a, ns in zip(
                                         self.graph.states, self.graph.actions, self.graph.next_states)], device=self.device).T
             if "ucb" in self.P["weight"]:
                 self.w = ucb_sum(mu, var, num_std=self.P["num_std"])
@@ -82,11 +82,11 @@ def ucb_sum(mu, var, num_std):
     return ucb.reshape(-1,1) + ucb.reshape(1,-1)
 
 def preference_entropy(mu, var, preference_eqn): # TODO: Redundancy with models.py
-    F_diff = mu.reshape(-1,1) - mu.reshape(1,-1)
+    pair_diff = mu.reshape(-1,1) - mu.reshape(1,-1)
     if preference_eqn == "thurstone": 
         sigma = torch.sqrt(var.reshape(-1,1) + var.reshape(1,-1))
-        sigma[torch.logical_and(F_diff == 0, sigma == 0)] = 1 # Handle 0/0 case
-        y_pred = norm.cdf(F_diff / sigma)
+        sigma[torch.logical_and(pair_diff == 0, sigma == 0)] = 1 # Handle 0/0 case
+        y_pred = norm.cdf(pair_diff / sigma)
     elif preference_eqn == "bradley-terry": 
         raise NotImplementedError()
     y_log_y = torch.nan_to_num(y_pred * torch.log(y_pred), 0)

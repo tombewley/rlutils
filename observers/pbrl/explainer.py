@@ -1,5 +1,3 @@
-from ...rewards.models import maximum_likelihood_fitness, least_squares_fitness
-
 from hyperrectangles.visualise import show_rectangles, show_samples
 import os
 import numpy as np
@@ -95,12 +93,10 @@ class Explainer:
         rewards, returns = oracle_vs_model_on_graph(self.pbrl.interface.oracle, self.pbrl.model, self.pbrl.graph)
         if len(A):
             # Oracle vs trajectory-level return
-            traj_level_returns = maximum_likelihood_fitness(A, y, self.pbrl.model.P["preference_eqn"])[0]
+            traj_level_returns = self.pbrl.model.maximum_likelihood_returns(A, y)[0]
             connected_oracle_returns = [returns[i,0] for i in sorted(connected)]
             axes[0].scatter(connected_oracle_returns, traj_level_returns, s=3, c="k")
             axes[0].set_xlabel("Oracle Return"); axes[0].set_ylabel("Trajectory-level Return")
-            # traj_level_returns_old = least_squares_fitness(A, y, 0.1, self.pbrl.model.P["preference_eqn"])[0]
-            # axes[3].scatter(connected_oracle_returns, traj_level_returns_old, s=3, c="k")
         # Oracle vs model return
         axes[1].scatter(returns[:,0], returns[:,1], s=3, c=["k" if i in connected else "r" for i in range(len(returns))])
         axes[1].set_xlabel("Oracle Return"); axes[1].set_ylabel("Model Return")

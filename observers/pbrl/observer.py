@@ -69,7 +69,7 @@ class PbrlObserver:
         ep_info = {"run_name": self.run_names[-1], "ep_num": ep_num}
         # Log reward sums
         if self.model is not None:
-            logs["model_return"] = self.model.fitness(states, actions, next_states)[0].item()
+            logs["model_return"] = self.model(states, actions, next_states).sum().item()
         if self.interface is not None and self.interface.oracle is not None:
             ep_info["oracle_rewards"] = self.interface.oracle(states, actions, next_states)
             ep_info["oracle_return"] = logs["oracle_return"] = sum(ep_info["oracle_rewards"]).item()

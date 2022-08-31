@@ -57,7 +57,7 @@ class RewardNet(RewardModel):
         if normalise: mu, std = (mu - self.shift) / self.scale, std / self.scale
         return mu, torch.pow(std, 2.), std
 
-    def fitness(self, states=None, actions=None, next_states=None, features=None):
+    def return_with_var(self, states=None, actions=None, next_states=None, features=None):
         if features is None: features = self.featuriser(states, actions, next_states)
         mu, var, _ = self._call_inner(features)
         return mu.sum(), var.sum()
@@ -89,18 +89,18 @@ class RewardNet(RewardModel):
                 A_batch, y_batch = A[batch], y[batch]
                 abs_A_batch = torch.abs(A_batch)
                 in_batch = abs_A_batch.sum(axis=0) > 0
-                F_pred, var_pred = torch.zeros(n_train, device=self.device), torch.zeros(n_train, device=self.device)
+                g_pred, var_pred = torch.zeros(n_train, device=self.device), torch.zeros(n_train, device=self.device)
                 for i in range(n_train):
-                    if in_batch[i]: F_pred[i], var_pred[i] = self.fitness(features=features[i])
+                    if in_batch[i]: g_pred[i], var_pred[i] = self.return_with_var(features=features[i])
                 if self.P["preference_eqn"] == "thurstone":
-                    pair_diff = A_batch @ F_pred
+                    pair_diff = A_batch @ g_pred
                     sigma = torch.sqrt(abs_A_batch @ var_pred)
                     y_pred = norm.cdf(pair_diff / sigma)
                     loss = bce_loss(y_pred, y_batch) # Binary cross-entropy loss, PEBBLE equation 4
                 elif self.P["preference_eqn"] == "bradley-terry":
                     # https://github.com/rll-research/BPref/blob/f3ece2ecf04b5d11b276d9bbb19b8004c29429d1/reward_model.py#L142
-                    F_pairs = torch.vstack([F_pred[[i_list[k], j_list[k]]] for k in batch])
-                    log_y_pred = torch.nn.functional.log_softmax(F_pairs, dim=1)
+                    g_pairs = torch.vstack([g_pred[[i_list[k], j_list[k]]] for k in batch])
+                    log_y_pred = torch.nn.functional.log_softmax(g_pairs, dim=1)
                     loss = -(torch.column_stack([y_batch, 1-y_batch]) * log_y_pred).sum() / y_batch.shape[0]
             self.net.optimise(loss, retain_graph=False)
         # Normalise rewards to be negative on the training set, with unit standard deviation
@@ -148,7 +148,7 @@ class RewardTree(RewardModel):
         else: return hr.tree.Tree(name=name, root=hr.node.Node(space),
                                   split_dims=split_dims, eval_dims=[r_d])
 
-    def fitness(self, states, actions, next_states):
+    def return_with_var(self, states, actions, next_states):
         # https://www.statlect.com/probability-distributions/normal-distribution-linear-combinations
         n = self.n(self.tree, states, actions, next_states)
         return n @ self.r, n @ torch.diag(self.var) @ n.T
@@ -236,10 +236,9 @@ class RewardTree(RewardModel):
         if mode != "reward":
             if mode == "preference":
                 print("Computing maximum likelihood returns...")
-                returns, loss = self.maximum_likelihood_fitness(A, y)
+                returns, loss = self.maximum_likelihood_returns(A, y)
                 returns *= self._mean_ep_length
                 print(f"Done (loss = {loss})")
-            # NOTE: scaling by episode lengths (making ep fitness correspond to sum not mean) causes weird behaviour
             rewards = torch.hstack([(g / l).expand(l) for g, l in zip(returns, ep_lengths)])
         # Populate space, then the tree itself
         tree.space.data = torch.hstack((features_cat, ep_nums.unsqueeze(1), rewards.unsqueeze(1))).cpu().numpy()
@@ -474,21 +473,20 @@ class RewardTree(RewardModel):
         for x in tree.get_leaf_nums(self.featuriser(states, actions, next_states).cpu().numpy()): n[x] += 1
         return n
 
-    def maximum_likelihood_fitness(self, A, y, lr=0.1, epsilon=1e-5):
+    def maximum_likelihood_returns(self, A, y, lr=0.1, epsilon=1e-5):
         """
-        Construct maximum likelihood fitness estimates under the specified preference equation.
-        Normalise fitness to be negative on the training set, with unit standard deviation.
-        https://apps.dtic.mil/sti/pdfs/ADA543806.pdf.
+        Construct maximum likelihood return estimates under the specified preference equation.
+        Normalise return to be negative on the training set, with unit standard deviation.
         """
         # Initialise with samples from standard normal
         pt_rng = torch.Generator(device=self.device)
-        pt_rng.manual_seed(self.pt_rng_seed)
-        f = torch.normal(torch.zeros(A.shape[1]), torch.ones(A.shape[1]), generator=pt_rng).to(A.device)
-        f.requires_grad = True
-        opt = torch.optim.Adam([f], lr=lr)
+        if self.pt_rng_seed is not None: pt_rng.manual_seed(self.pt_rng_seed)
+        g = torch.normal(torch.zeros(A.shape[1]), torch.ones(A.shape[1]), generator=pt_rng).to(A.device)
+        g.requires_grad = True
+        opt = torch.optim.Adam([g], lr=lr)
         loss = float("inf")
         while True:
-            pair_diff = A @ f
+            pair_diff = A @ g
             if self.P["preference_eqn"] == "thurstone": y_pred = norm.cdf(pair_diff)
             elif self.P["preference_eqn"] == "bradley-terry": y_pred = 1 / (1 + torch.exp(-pair_diff))
             new_loss = bce_loss(y_pred, y)
@@ -496,21 +494,22 @@ class RewardTree(RewardModel):
             opt.step()
             if torch.abs(new_loss - loss) < epsilon: break
             loss = new_loss; opt.zero_grad()
-        return ((f - f.max()) / f.std()).detach(), new_loss
+        return ((g - g.max()) / g.std()).detach(), new_loss
 
 # ==============================================================================
 # UTILITIES
 
-def least_squares_fitness(A, y, p_clip, preference_eqn):
+def least_squares_returns(A, y, p_clip, preference_eqn):
     """
-    Construct least fitness estimates under the specified preference equation.
+    Construct least squares return estimates under the specified preference equation.
     Uses Morrissey-Gulliksen method for incomplete comparison matrix.
+    Normalise return to be negative on the training set.
     """
     y = torch.clamp(y, p_clip, 1-p_clip) # Clip to prevent infinite values
     if preference_eqn == "thurstone": d = norm.icdf(y)
     elif preference_eqn == "bradley-terry": raise NotImplementedError()
-    f, residuals, _, _ = torch.linalg.lstsq(A.T @ A, A.T @ d, rcond=None) # NOTE: NumPy implementation seems to be more stable
-    return f - f.max(), d, residuals # NOTE: Shift so that maximum fitness is zero (cost function)
+    g, residuals, _, _ = torch.linalg.lstsq(A.T @ A, A.T @ d, rcond=None) # NOTE: NumPy implementation seems to be more stable
+    return g - g.max(), d, residuals
 
 
 @numba.jit(nopython=True, cache=True, parallel=True)
