@@ -112,28 +112,24 @@ class RewardNet(RewardModel):
 class RewardTree(RewardModel):
     def __init__(self, P):
         RewardModel.__init__(self, P)
-        self.tree = self.make_tree()
-        self.history = {} # History of tree modifications
         # Bring in some convenient visualisation methods
         self.rules, self.diagram, self.rectangles, self.show_split_quality = \
         hr.rules, hr.diagram, hr.show_rectangles, hr.show_split_quality
+        self.forest = []; self.add_to_forest({"tree": self.make_tree()})
 
     def _call_inner(self, features):
+        d = self.forest[0]
         # NOTE: Awkward torch <-> numpy conversion
-        indices = torch.tensor(self.tree.get_leaf_nums(features.cpu().numpy()), device=self.device)
-        mu, var = self.r[indices], self.var[indices]
+        indices = torch.tensor(d["tree"].get_leaf_nums(features.cpu().numpy()), device=self.device)
+        mu, var = d["r"][indices], d["var"][indices]
         std = torch.sqrt(var)
         return mu, var, std
 
-    @property
-    def tree(self): return self._tree
-    @tree.setter
-    def tree(self, tree):
-        self._tree = tree
-        self.r = torch.tensor(tree.gather(("mean","reward")), device=self.device).float()
-        self.var = torch.tensor(tree.gather(("var","reward")), device=self.device).float()
-        self.r[torch.isnan(self.r)] = 0. # NOTE: Reward defaults to 0. in the absence of data.
-        assert not(torch.isnan(self.r).any() or torch.isnan(self.var).any())
+    def return_with_var(self, states, actions, next_states):
+        # https://www.statlect.com/probability-distributions/normal-distribution-linear-combinations
+        d = self.forest[0]
+        n = self.n(d["tree"], states, actions, next_states)
+        return n @ d["r"], n @ torch.diag(d["var"]) @ n.T
 
     def make_tree(self, seed_func=None, name="reward_function"):
         space = hr.Space(dim_names=self.featuriser.names+["ep", "reward"])
@@ -148,66 +144,70 @@ class RewardTree(RewardModel):
         else: return hr.tree.Tree(name=name, root=hr.node.Node(space),
                                   split_dims=split_dims, eval_dims=[r_d])
 
-    def return_with_var(self, states, actions, next_states):
-        # https://www.statlect.com/probability-distributions/normal-distribution-linear-combinations
-        n = self.n(self.tree, states, actions, next_states)
-        return n @ self.r, n @ torch.diag(self.var) @ n.T
+    def add_to_forest(self, tree_dict):
+        tree = tree_dict["tree"]
+        print(self.rules(tree, pred_dims="reward", sf=5, dims_as_indices=False))
+        tree_dict["r"] = torch.tensor(tree.gather(("mean","reward")), device=self.device).float()
+        tree_dict["r"][torch.isnan(tree_dict["r"])] = 0. # NOTE: Reward defaults to 0. in the absence of data
+        tree_dict["var"] = torch.tensor(tree.gather(("var","reward")), device=self.device).float()
+        # NOTE: Depopulate space and tree to reduce memory requirement
+        tree.space.data = None; tree.depopulate()
+        self.forest = [tree_dict]
 
-    def update(self, graph, mode, history_key, reset_tree=True):
-        assert reset_tree; trees = [self.make_tree() for _ in range(self.P["trees_per_update"])]
-        histories = [{} for _ in range(self.P["trees_per_update"])]
+    def update(self, graph, mode, history_key):
         # Set factor for scaling rewards when computing preference loss
         self._mean_ep_length = np.mean(graph.ep_lengths)
-        for tree, history in zip(trees, histories):
+        # Determine size of grow and prune subgraphs if applicable
+        if self.P["prune_ratio"] is not None:
+            assert mode == "preference", "Not implemented for mode in {reward, return}; implement ensembling using another class"
+            if self.P["nodewise_partition"]:
+                num_prune = int(round(len(graph) * min(max(0, self.P["prune_ratio"]), 1)))
+                num_grow = len(graph) - num_prune
+                if num_grow < 1 or num_prune < 1: return {}
+            else:
+                num_prune = int(round(len(graph.edges) * min(max(0, self.P["prune_ratio"]), 1)))
+                num_grow = len(graph.edges) - num_prune
+                if num_grow < 1 or num_prune < 1: return {}
+        # Iterate through new trees
+        new_tree_dicts = []
+        for _ in range(self.P["trees_per_update"]):
+            d = {"tree": self.make_tree(), "history_key": history_key}
             if self.P["prune_ratio"] is not None:
-                assert mode == "preference", "Not implemented for mode in {reward, return}; implement ensembling using another class"
-
+                # Generate disjoint random subgraphs for growth, pruning and evaluation of this tree
                 if self.P["nodewise_partition"]:
-                    num_prune = int(round(len(graph) * min(max(0, self.P["prune_ratio"]), 1)))
-                    num_grow = len(graph) - num_prune
-                    if num_grow < 1 or num_prune < 1: return {}
                     grow_graph, prune_graph, eval_graph = graph.random_nodewise_connected_subgraph(num_grow, partitioned=True)
                     assert not (set(grow_graph.nodes) & set(prune_graph.nodes))
                     assert set(grow_graph.edges) | set(prune_graph.edges) | set(eval_graph.edges) == set(graph.edges)
                     if len(grow_graph.edges) < 1 or len(prune_graph.edges) < 1: return {}
                 else:
-                    num_prune = int(round(len(graph.edges) * min(max(0, self.P["prune_ratio"]), 1)))
-                    num_grow = len(graph.edges) - num_prune
-                    if num_grow < 1 or num_prune < 1: return {}
                     grow_graph, prune_graph = graph.random_connected_subgraph(num_grow)
                     eval_graph = prune_graph # NOTE: eval_graph is the same as the prune graph
                     assert set(grow_graph.edges) | set(prune_graph.edges) == set(graph.edges)
                 assert not (set(grow_graph.edges) & set(prune_graph.edges))
-
-                print(f"Grow graph: {len(grow_graph.edges)} preferences between {len(grow_graph)} episodes")
-                print(f"Prune graph: {len(prune_graph.edges)} preferences between {len(prune_graph)} episodes")
-                print(f"Eval graph: {len(eval_graph.edges)} preferences between {len(eval_graph)} episodes")
-
-                # Grow using the grow_graph
-                self.populate(tree, grow_graph, mode=mode)
-                history["grow"] = self.grow(tree, grow_graph)
-                if self.P["post_populate_with_all"]: self.populate(tree, graph, mode=mode)
-                # Prune using the prune_graph
-                history["prune"] = self.prune(tree, prune_graph)#, eval_graph)
-                # Evaluate using the eval_graph
-                history["loss"], _ = self.preference_loss(*self.make_loss_data_structures(tree, eval_graph))
             else:
+                # Use the full graph for growth, pruning and evaluation
                 assert self.P["split_dim_entropy"] > 0. or self.P["trees_per_update"] == 1
-                if not self.populate(tree, graph, mode=mode):
-                    print("=== No data for model update ==="); return {}
-                history["grow"] = self.grow(tree, graph)
-                history["prune"], history["loss"] = self.prune(tree, graph) if mode == "preference" else self.prune_mccp(tree)
-
-        i, _ = min([(i, h["loss"]) for i, h in enumerate(histories)], key=lambda x:x[1])
-        self.tree = trees[i] # NOTE: This triggers tree.setter
-        self.history[history_key] = histories[i]
-
-        print([(_i, h["loss"]) for _i, h in enumerate(histories)])
+                grow_graph = prune_graph = eval_graph = graph
+            print(f"Grow graph:  {len(grow_graph.edges)} preferences between {len(grow_graph)} episodes")
+            print(f"Prune graph: {len(prune_graph.edges)} preferences between {len(prune_graph)} episodes")
+            print(f"Eval graph:  {len(eval_graph.edges)} preferences between {len(eval_graph)} episodes")
+            d["grow_preferences"] = grow_graph.edges
+            # Grow using the grow_graph
+            if not self.populate(d["tree"], grow_graph, mode=mode): return {}
+            d["grow_sequence"] = self.grow(d["tree"], grow_graph)
+            # Prune using the prune_graph
+            d["prune_sequence"], l = self.prune(d["tree"], prune_graph)#, eval_graph) if mode == "preference" else self.prune_mccp(tree)
+            # Evaluate using the eval_graph
+            if eval_graph is prune_graph: d["eval_loss"] = l
+            else: d["eval_loss"], _ = self.preference_loss(*self.make_loss_data_structures(d["tree"], eval_graph))
+            new_tree_dicts.append(d)
+        # Identify the new tree with lowest eval_loss and recruit it to the forest
+        i, _ = min([(i, d["eval_loss"]) for i, d in enumerate(new_tree_dicts)], key=lambda x:x[1])
+        print([(_i, d["eval_loss"]) for _i, d in enumerate(new_tree_dicts)])
         print(i)
-        print(self.rules(self.tree, pred_dims="reward", sf=5, dims_as_indices=False))
-
+        self.add_to_forest(new_tree_dicts[i])
         self._mean_ep_length = None
-        return {"num_leaves": len(self.tree)}
+        return {"num_leaves": len(self.forest[0]["tree"])}
 
     def populate(self, tree, graph, mode):
         """
@@ -276,11 +276,11 @@ class RewardTree(RewardModel):
                         # NOTE: Empty split cache and recompute queue; necessary because split quality is not local
                         tree._compute_split_queue()
                     # Append to history
-                    history.append({
-                        "split_node":      tree.leaves.index(node.left),
-                        "split_dim":       node.split_dim,
-                        "split_threshold": node.split_threshold
-                    })
+                    history.append((
+                        tree.leaves.index(node.left), # Store index of split node...
+                        node.split_dim,               # ...split dim...
+                        node.split_threshold          # ...and split threshold
+                    ))
                     pbar.update()
         if self.P["split_by_preference"]:
             # Wipe _underscore variables for safety; prevents further splitting except by calling this method
@@ -411,13 +411,13 @@ class RewardTree(RewardModel):
                 if eval_graph is not None:
                     eval_counts[x] += eval_counts[x+1]; eval_counts = np.delete(eval_counts, x+1, axis=0)
                     loss, _ = self.preference_loss(mean, var, eval_counts, eval_i_list, eval_j_list, eval_y)
-                history.append({"prune_nodes": {x, x+1}})
+                history.append({x, x+1}) # Store indices of pruned node pair
                 losses.append(loss.item() + (self.P["alpha"] * len(subtree)))
                 pbar.update(-1)
         # NOTE: Using reversed list to ensure *last* occurrence returned
         optimum = (len(losses)-1) - np.argmin(list(reversed(losses)))
-        for h in history[:optimum]:
-            x = min(h["prune_nodes"])
+        for pruned_pair in history[:optimum]:
+            x = min(pruned_pair)
             assert tree.prune_to(tree.leaves[x].parent) == {x, x+1}
         assert len(tree) == (len(losses) - optimum)
         return history, losses[optimum]
