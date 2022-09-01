@@ -248,21 +248,23 @@ class RewardTree(RewardModel):
         tree.populate()
         return True
 
-    def grow(self, tree, graph):
+    def grow(self, tree, graph, fast_0_1=True):
         """
         Given a populated tree, perform best-first variance or preference-based splitting until m_max is reached.
         """
         if self.P["split_by_preference"]:
             # NOTE: graph must be the same one used to populate the tree!
-            # tree.split_finder = self.preference_based_split_finder
-            tree.split_finder = self.preference_based_split_finder_fast_0_1
+            if self.P["loss_func"] == "0-1" and fast_0_1:
+                tree.split_finder = self.preference_based_split_finder_fast_0_1
+            else:
+                tree.split_finder = self.preference_based_split_finder
             # NOTE: self._current_loss is unused by preference_based_split_finder_fast_0_1
             mean, var, counts, self._i_list, self._j_list, self._y = self.make_loss_data_structures(tree, graph)
             assert counts.shape[0] == 1; tree.root.counts = counts[0]
             self._current_loss, self._current_pair_diff = self.preference_loss(mean, var, counts, self._i_list, self._j_list, self._y)
             ep_d = tree.space.idxify("ep")
         history = []
-        with tqdm(total=self.P["m_max"], initial=len(tree), desc="Splitting") as pbar:
+        with tqdm(total=self.P["m_max"], initial=len(tree), desc="Growing") as pbar:
             while len(tree) < self.P["m_max"] and len(tree.split_queue) > 0:
                 node = tree.split_next_best(self.P["min_samples_leaf"], self.P["num_from_queue"], self.P["split_dim_entropy"], self.P["store_all_qual"])
                 if node is not None:
