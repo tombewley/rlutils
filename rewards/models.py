@@ -148,8 +148,9 @@ class RewardTree(RewardModel):
         tree = tree_dict["tree"]
         print(self.rules(tree, pred_dims="reward", sf=5, dims_as_indices=False))
         tree_dict["r"] = torch.tensor(tree.gather(("mean","reward")), device=self.device).float()
-        tree_dict["r"][torch.isnan(tree_dict["r"])] = 0. # NOTE: Reward defaults to 0. in the absence of data
         tree_dict["var"] = torch.tensor(tree.gather(("var","reward")), device=self.device).float()
+        tree_dict["r"][torch.isnan(tree_dict["r"])] = 0. # NOTE: Reward defaults to 0. in the absence of data
+        tree_dict["var"][torch.isnan(tree_dict["var"])] = 0.
         # NOTE: Depopulate space and tree to reduce memory requirement
         tree.space.data = None; tree.depopulate()
         self.forest = [tree_dict]
@@ -191,12 +192,14 @@ class RewardTree(RewardModel):
             print(f"Grow graph:  {len(grow_graph.edges)} preferences between {len(grow_graph)} episodes")
             print(f"Prune graph: {len(prune_graph.edges)} preferences between {len(prune_graph)} episodes")
             print(f"Eval graph:  {len(eval_graph.edges)} preferences between {len(eval_graph)} episodes")
-            d["grow_preferences"] = grow_graph.edges
+            d["grow_preferences"] = list(grow_graph.edges)
             # Grow using the grow_graph
             if not self.populate(d["tree"], grow_graph, mode=mode): return {}
             d["grow_sequence"] = self.grow(d["tree"], grow_graph)
+            print(f"Growth terminated with {len(d['tree'])} leaves")
             # Prune using the prune_graph
             d["prune_sequence"], l = self.prune(d["tree"], prune_graph)#, eval_graph) if mode == "preference" else self.prune_mccp(tree)
+            print(f"Pruned to {len(d['tree'])} leaves")
             # Evaluate using the eval_graph
             if eval_graph is prune_graph: d["eval_loss"] = l
             else: d["eval_loss"], _ = self.preference_loss(*self.make_loss_data_structures(d["tree"], eval_graph))
@@ -253,6 +256,7 @@ class RewardTree(RewardModel):
             # NOTE: graph must be the same one used to populate the tree!
             # tree.split_finder = self.preference_based_split_finder
             tree.split_finder = self.preference_based_split_finder_fast_0_1
+            # NOTE: self._current_loss is unused by preference_based_split_finder_fast_0_1
             mean, var, counts, self._i_list, self._j_list, self._y = self.make_loss_data_structures(tree, graph)
             assert counts.shape[0] == 1; tree.root.counts = counts[0]
             self._current_loss, self._current_pair_diff = self.preference_loss(mean, var, counts, self._i_list, self._j_list, self._y)
@@ -368,7 +372,7 @@ class RewardTree(RewardModel):
             split_data, ep_nums, rewards, min_samples_leaf,
             node.mean[r_d], node.counts,
             np.array(self._i_list), np.array(self._j_list),
-            np.sign(self._y.cpu().numpy() - 0.5), self._current_pair_diff, self._current_loss.item()
+            np.sign(self._y.cpu().numpy() - 0.5), self._current_pair_diff
         )
         splits = []
         for split_dim, split_index in zip(split_dims, greedy_split_indices):
@@ -514,7 +518,7 @@ def least_squares_returns(A, y, p_clip, preference_eqn):
 
 @numba.jit(nopython=True, cache=True, parallel=True)
 def _pbsf_0_1_inner(split_data, ep_nums, rewards, min_samples_leaf, parent_mean, parent_counts,
-                    i_list, j_list, y_sign, current_pair_diff, current_loss):
+                    i_list, j_list, y_sign, current_pair_diff):
     """
     Jitted inner function for preference-based split finding with the 0-1 loss.
     """
@@ -549,7 +553,7 @@ def _pbsf_0_1_inner(split_data, ep_nums, rewards, min_samples_leaf, parent_mean,
             pair_diff[:,k_] = (mean * (counts[:,:,i_list[k_]] - counts[:,:,j_list[k_]])).sum(axis=0)
         pair_diff = pair_diff + current_pair_diff - pair_diff[0]
         loss = np.abs(y_sign - np.sign(pair_diff)).sum(axis=-1) / k
-        all_qual[valid_split_indices,d] = current_loss - loss[valid_split_indices]
+        all_qual[valid_split_indices,d] = loss[0] - loss[valid_split_indices]
         # Greedy split is the one with the highest quality
         greedy = np.argmax(all_qual[valid_split_indices,d])
         greedy_split_indices[d] = valid_split_indices[greedy]
