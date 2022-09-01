@@ -115,7 +115,7 @@ class RewardTree(RewardModel):
         # Bring in some convenient visualisation methods
         self.rules, self.diagram, self.rectangles, self.show_split_quality = \
         hr.rules, hr.diagram, hr.show_rectangles, hr.show_split_quality
-        self.forest = []; self.add_to_forest({"tree": self.make_tree()})
+        self.forest = []; self.add_to_forest({"tree": self.make_tree(), "history_key": "__init__"})
 
     def _call_inner(self, features):
         d = self.forest[0]
@@ -153,7 +153,7 @@ class RewardTree(RewardModel):
         tree_dict["var"][torch.isnan(tree_dict["var"])] = 0.
         # NOTE: Depopulate space and tree to reduce memory requirement
         tree.space.data = None; tree.depopulate()
-        self.forest = [tree_dict]
+        self.forest.insert(0, tree_dict)
 
     def update(self, graph, mode, history_key):
         # Set factor for scaling rewards when computing preference loss
@@ -209,8 +209,23 @@ class RewardTree(RewardModel):
         print([(_i, d["eval_loss"]) for _i, d in enumerate(new_tree_dicts)])
         print(i)
         self.add_to_forest(new_tree_dicts[i])
+        self.manage_forest(graph)
         self._mean_ep_length = None
         return {"num_leaves": len(self.forest[0]["tree"])}
+
+    def manage_forest(self, graph):
+        excess = len(self.forest) - self.P["forest_size"]
+        if excess <= 0: return
+        if self.P["sort_forest_by"] == "loss":
+            states, actions, next_states, _, i_list, j_list, y = graph.preference_data_structures(unconnected_ok=True)
+            losses = []
+            for d in self.forest:
+                counts = np.hstack([self.n(d["tree"], s, a, ns).unsqueeze(1).cpu().numpy() for s, a, ns in zip(states, actions, next_states)])
+                losses.append(self.preference_loss(d["r"].cpu().numpy(), d["var"].cpu().numpy(), counts, i_list, j_list, y)[0].item())
+            self.forest = [self.forest[t] for t in np.argsort(losses)]
+        else: assert self.P["sort_forest_by"] == "age"
+        self.forest = self.forest[:-excess]
+        print([d["history_key"] for d in self.forest])
 
     def populate(self, tree, graph, mode):
         """
