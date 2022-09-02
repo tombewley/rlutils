@@ -18,7 +18,7 @@ class PbrlObserver:
         self.run_names = run_names if run_names is not None else []
         # Preference graph, reward model, trajectory pair sampler, preference collection interface and explainer are all modular
         self.graph = PreferenceGraph()
-        self.model = self.P["model"]["class"](self.P["model"]) if "model" in self.P else None
+        self.model = self.P["model"]["class"](self.P["model"]) if ("model" in self.P and "class" in self.P["model"]) else None
         self.sampler = Sampler(self.graph, self.model, self.P["sampler"]) if "sampler" in self.P else None
         self.interface = self.P["interface"]["class"](self.graph, self.P["interface"]) if "interface" in self.P else None
         self.explainer = Explainer(self, self.P["explainer"] if "explainer" in self.P else {})
