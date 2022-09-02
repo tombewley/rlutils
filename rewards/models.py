@@ -503,7 +503,7 @@ class RewardTree(RewardModel):
         # Initialise with samples from standard normal
         pt_rng = torch.Generator(device=self.device)
         if self.pt_rng_seed is not None: pt_rng.manual_seed(self.pt_rng_seed)
-        g = torch.normal(torch.zeros(A.shape[1]), torch.ones(A.shape[1]), generator=pt_rng).to(A.device)
+        g = torch.normal(torch.zeros(A.shape[1], device=self.device), torch.ones(A.shape[1], device=self.device), generator=pt_rng)
         g.requires_grad = True
         opt = torch.optim.Adam([g], lr=lr)
         loss = float("inf")
