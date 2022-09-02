@@ -103,9 +103,10 @@ class RewardNet(RewardModel):
                     log_y_pred = torch.nn.functional.log_softmax(g_pairs, dim=1)
                     loss = -(torch.column_stack([y_batch, 1-y_batch]) * log_y_pred).sum() / y_batch.shape[0]
             self.net.optimise(loss, retain_graph=False)
-        # Normalise rewards to be negative on the training set, with unit standard deviation
+        # Normalise rewards to have a common valence on the training set, with unit standard deviation
         with torch.no_grad(): all_rewards, _, _ = self._call_inner(features_cat, normalise=False)
-        self.shift, self.scale = all_rewards.max(), all_rewards.std()
+        self.shift = all_rewards.max() if self.P["negative_rewards"] else all_rewards.min()
+        self.scale = all_rewards.std()
         return {}
 
 
@@ -497,7 +498,7 @@ class RewardTree(RewardModel):
     def maximum_likelihood_returns(self, A, y, lr=0.1, epsilon=1e-5):
         """
         Construct maximum likelihood return estimates under the specified preference equation.
-        Normalise return to be negative on the training set, with unit standard deviation.
+        Normalise return to be have a common valence on the training set, with unit standard deviation.
         """
         # Initialise with samples from standard normal
         pt_rng = torch.Generator(device=self.device)
@@ -515,7 +516,7 @@ class RewardTree(RewardModel):
             opt.step()
             if torch.abs(new_loss - loss) < epsilon: break
             loss = new_loss; opt.zero_grad()
-        return ((g - g.max()) / g.std()).detach(), new_loss
+        return ((g - (g.max() if self.P["negative_rewards"] else g.min())) / g.std()).detach(), new_loss
 
 # ==============================================================================
 # UTILITIES
