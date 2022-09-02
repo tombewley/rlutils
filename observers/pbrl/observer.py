@@ -28,11 +28,11 @@ class PbrlObserver:
         if self._online:
             assert self.model is not None and self.sampler is not None and self.interface is not None
             assert self._observing
-            assert self.P["feedback_freq"] % self.P["observe_freq"] == 0
-            if self.P["scheduling_coef"] > 0: assert self.sampler.P["recency_constraint"]
+            n = self.P["feedback_period"] / self.P["observe_freq"]
             b = self.P["feedback_period"] / self.P["feedback_freq"]
-            assert b % 1 == 0
-            self._num_batches = int(b)
+            assert (n % 1 == 0) and (b % 1 == 0)
+            self._total_possible_pairs = int(round((n * (n-1)) / 2))
+            self._num_batches = int(round(b))
             self._batch_num = 0
             self._n_on_prev_batch = 0
             if "offline_graph_path" in self.P:
@@ -80,12 +80,12 @@ class PbrlObserver:
             self.graph.add_episode(states, actions, next_states, **ep_info)
         if self._online:
             if (ep_num+1) % self.P["feedback_freq"] == 0 and (ep_num+1) <= self.P["feedback_period"]:
-                # Calculate batch size.
+                # Calculate batch size
                 remaining_budget = self.P["feedback_budget"] - len(self.graph.edges)
                 uniform_batch_ratio = 1 / (self._num_batches - self._batch_num)
-                num_recent_pairs = len(self.graph)**2 - self._n_on_prev_batch**2
-                num_future_pairs = self.P["feedback_period"]**2 - self._n_on_prev_batch**2
-                scheduled_batch_ratio = num_recent_pairs / num_future_pairs
+                prev_pairs = (self._n_on_prev_batch * (self._n_on_prev_batch - 1)) / 2
+                current_pairs = (len(self.graph) * (len(self.graph) - 1)) / 2
+                scheduled_batch_ratio = (current_pairs - prev_pairs) / (self._total_possible_pairs - prev_pairs)
                 batch_size = int(round(remaining_budget * ((scheduled_batch_ratio * self.P["scheduling_coef"]) + \
                                                            (uniform_batch_ratio * (1 - self.P["scheduling_coef"])))))
                 # Gather preference batch
