@@ -28,8 +28,9 @@ class PbrlObserver:
         if self._online:
             assert self.model is not None and self.sampler is not None and self.interface is not None
             assert self._observing
-            assert self.P["feedback_freq"] % self.P["observe_freq"] == 0    
-            b = self.P["num_episodes_before_freeze"] / self.P["feedback_freq"]
+            assert self.P["feedback_freq"] % self.P["observe_freq"] == 0
+            if self.P["scheduling_coef"] > 0: assert self.sampler.P["recency_constraint"]
+            b = self.P["feedback_period"] / self.P["feedback_freq"]
             assert b % 1 == 0
             self._num_batches = int(b)
             self._batch_num = 0
@@ -78,20 +79,15 @@ class PbrlObserver:
             # NOTE: Nodes are numbered as consecutive integers, ep_num stored in ep_info
             self.graph.add_episode(states, actions, next_states, **ep_info)
         if self._online:
-            if (ep_num+1) % self.P["feedback_freq"] == 0 and (ep_num+1) <= self.P["num_episodes_before_freeze"]:
+            if (ep_num+1) % self.P["feedback_freq"] == 0 and (ep_num+1) <= self.P["feedback_period"]:
                 # Calculate batch size.
-                if self.P["scheduling_coef"] > 0: # TODO: Make adaptive to remaining budget
-                    assert self.sampler.P["recency_constraint"]
-                    K = self.P["feedback_budget"]
-                    B = self._num_batches
-                    f = self.P["feedback_freq"] / self.P["observe_freq"] # Number of episodes between batches
-                    c = self.P["scheduling_coef"]
-                    b = self._batch_num # Current batch number.
-                    batch_size = int(round((K / B * (1 - c)) + (K * (f * (2*(b+1) - 1) - 1) / (B * (B*f - 1)) * c)))
-                else:
-                    K = self.P["feedback_budget"] - len(self.graph.edges) # Remaining budget
-                    B = self._num_batches - self._batch_num # Remaining number of batches
-                    batch_size = int(round(K / B))
+                remaining_budget = self.P["feedback_budget"] - len(self.graph.edges)
+                uniform_batch_ratio = 1 / (self._num_batches - self._batch_num)
+                num_recent_pairs = len(self.graph)**2 - self._n_on_prev_batch**2
+                num_future_pairs = self.P["feedback_period"]**2 - self._n_on_prev_batch**2
+                scheduled_batch_ratio = num_recent_pairs / num_future_pairs
+                batch_size = int(round(remaining_budget * ((scheduled_batch_ratio * self.P["scheduling_coef"]) + \
+                                                           (uniform_batch_ratio * (1 - self.P["scheduling_coef"])))))
                 # Gather preference batch
                 logs.update(preference_batch(
                     sampler=self.sampler,
