@@ -28,6 +28,7 @@ class PbrlObserver:
         if self._online:
             assert self.model is not None and self.sampler is not None and self.interface is not None
             assert self._observing
+            if self.P["scheduling_coef"] > 0: assert self.sampler.P["recency_constraint"]
             n = self.P["feedback_period"] / self.P["observe_freq"]
             b = self.P["feedback_period"] / self.P["feedback_freq"]
             assert (n % 1 == 0) and (b % 1 == 0)
