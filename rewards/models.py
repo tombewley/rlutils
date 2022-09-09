@@ -518,21 +518,18 @@ class RewardTree(RewardModel):
             loss = new_loss; opt.zero_grad()
         return ((g - (g.max() if self.P["negative_rewards"] else g.min())) / g.std()).detach(), new_loss
 
-# ==============================================================================
-# UTILITIES
-
-def least_squares_returns(A, y, p_clip, preference_eqn):
-    """
-    Construct least squares return estimates under the specified preference equation.
-    Uses Morrissey-Gulliksen method for incomplete comparison matrix.
-    Normalise return to be negative on the training set.
-    """
-    y = torch.clamp(y, p_clip, 1-p_clip) # Clip to prevent infinite values
-    if preference_eqn == "thurstone": d = norm.icdf(y)
-    elif preference_eqn == "bradley-terry": raise NotImplementedError()
-    g, residuals, _, _ = torch.linalg.lstsq(A.T @ A, A.T @ d, rcond=None) # NOTE: NumPy implementation seems to be more stable
-    return g - g.max(), d, residuals
-
+    def least_squares_returns(self, A, y, p_clip=0.1):
+        """
+        Construct least squares return estimates under the specified preference equation.
+        Uses Morrissey-Gulliksen method for incomplete comparison matrix.
+        Normalise return to be have a common valence on the training set, with unit standard deviation.
+        NOTE: p_clip gets rid of extreme preference values, distorting the results if y is continuous.
+        """
+        y = torch.clamp(y, p_clip, 1-p_clip)
+        if self.P["preference_eqn"] == "thurstone": d = norm.icdf(y)
+        elif self.P["preference_eqn"] == "bradley-terry": d = -torch.log((1/y) - 1)
+        g, residuals, _, _ = torch.linalg.lstsq(A.T @ A, A.T @ d, rcond=None)
+        return ((g - (g.max() if self.P["negative_rewards"] else g.min())) / g.std()), d, residuals
 
 @numba.jit(nopython=True, cache=True, parallel=True)
 def _pbsf_0_1_inner(split_data, ep_nums, rewards, min_samples_leaf, parent_mean, parent_counts,
