@@ -270,10 +270,11 @@ class RewardTree(RewardModel):
         """
         if self.P["split_by_preference"]:
             # NOTE: graph must be the same one used to populate the tree!
-            if self.P["loss_func"] == "0-1" and fast_0_1:
-                tree.split_finder = self.preference_based_split_finder_fast_0_1
-            else:
-                tree.split_finder = self.preference_based_split_finder
+            # if self.P["loss_func"] == "0-1" and fast_0_1: # TODO: Clean this up
+            #     tree.split_finder = self.preference_based_split_finder_fast_0_1
+            # else:
+            #     tree.split_finder = self.preference_based_split_finder
+            tree.split_finder = self.preference_based_split_finder_fast_0_1
             # NOTE: self._current_loss is unused by preference_based_split_finder_fast_0_1
             mean, var, counts, self._i_list, self._j_list, self._y = self.make_loss_data_structures(tree, graph)
             assert counts.shape[0] == 1; tree.root.counts = counts[0]
