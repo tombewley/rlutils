@@ -1,4 +1,5 @@
 import importlib
+from copy import deepcopy
 
 
 # TODO: Wheel reinvention here! Use wandb.config
@@ -34,7 +35,7 @@ def build_params(paths, params=None, root_dir="", verbose=False):
         i = None
         if "=" in p: # For parameter array
             p, i = p.split("=")
-        new = importlib.import_module(f"{root_dir}.{p}".replace("/",".")).P
+        new = deepcopy(importlib.import_module(f"{root_dir}.{p}".replace("/",".")).P)
         recursive_update(update, new, i=i, block_overwrite=True, verbose=False)
     recursive_update(params, update, verbose=verbose)
     return params

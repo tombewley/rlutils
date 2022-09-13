@@ -33,6 +33,8 @@ class PreferenceGraph:
     @property
     def oracle_rewards(self): return [ep["oracle_rewards"] for _,ep in self.nodes(data=True)]
     @property
+    def oracle_returns(self): return [ep["oracle_return"] for _,ep in self.nodes(data=True)]
+    @property
     def ep_lengths(self): return [len(ep["actions"]) for _,ep in self.nodes(data=True)] # NOTE: So robust to future change to store T+1 states!
 
     @property
