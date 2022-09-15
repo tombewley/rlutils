@@ -1,7 +1,4 @@
-from torch import no_grad, split, stack, hstack, vstack, sqrt, corrcoef
-from numpy import matrix, sqrt as sqrt_np
-import networkx as nx
-from sklearn.manifold import MDS
+from torch import no_grad, split, stack, hstack, vstack, corrcoef
 
 
 def epic(states, actions, next_states, reward_functions=None, rewards=None, canon_actions=None, canon_next_states=None, gamma=1.):
@@ -42,25 +39,10 @@ def mean_rewards(reward_function, states, actions, next_states):
                               next_states.unsqueeze(0).expand(n_v, n_m, next_states.shape[1]))
     return rewards.mean(dim=1)
 
-def graph(corr):
-    """Represent Pearson correlation matrix as an undirected networkx graph"""
-    return nx.from_numpy_matrix(corr.cpu().numpy())
-
-def mds_graph_layout(g):
-    """Networkx graph layout using scikit-learn's multidimensional scaling tool"""
-    return MDS(max_iter=3000, eps=1e-9, dissimilarity="precomputed", n_init=10
-              ).fit(corr_to_dist(nx.to_numpy_matrix(g))).embedding_
-
-def draw_graph(g, edgelist=None):
-    """Draw networkx graph representation of correlation matrix using MDS layout"""
-    nx.draw(g, pos=mds_graph_layout(g), node_size=0, with_labels=True, edgelist=edgelist)
-
-def corr_to_dist(corr):
-    return (sqrt_np if type(corr) == matrix else sqrt)(0.5 * (1 - corr))
-
 if __name__ == "__main__":
     from torch import rand
     import matplotlib.pyplot as plt
+    from rlutils.rewards.evaluate import corr_to_dist, graph, draw_graph
 
     def r0(states, actions, next_states):
         return ((next_states[...,0] - states[...,0]) > -0.5).float()
@@ -78,6 +60,7 @@ if __name__ == "__main__":
     n_v = 100
     n_m = 50
 
-    g = epic([r0,r1,r2,r3,r4,r5], rand(n_v, 3), rand(n_v, 2), rand(n_v, 3), rand(n_m, 2), rand(n_m, 3))
-    nx.draw(g, pos=mds_graph_layout(g), with_labels=True, edgelist=[(4,5)])
+    corr_r, _ = epic(states=rand(n_v, 3), actions=rand(n_v, 2), next_states=rand(n_v, 3),
+                reward_functions=[r0,r1,r2,r3,r4,r5], canon_actions=rand(n_m, 2), canon_next_states=rand(n_m, 3))
+    draw_graph(graph(corr_to_dist(corr_r)), node_size=0, with_labels=True, edgelist=[(4,5)])
     plt.show()

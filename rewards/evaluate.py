@@ -2,6 +2,8 @@ import torch
 import numpy as np
 from scipy.spatial.distance import pdist, squareform
 from scipy.stats import kendalltau
+import networkx as nx
+from sklearn.manifold import MDS
 from .epic import epic_with_return
 
 
@@ -41,12 +43,36 @@ def rank_correlation(graph, reward_functions=None, returns=None):
 def bt_loss_inner(normalised_diff, y, equal_band=0.):
     y_pred = 1 / (1 + torch.exp(-normalised_diff))
     # Binary cross-entropy loss
-    loss_bce = torch.nn.BCELoss(reduction="none")(y_pred, y.expand(*y_pred.shape)).mean(dim=-1)
+    try:
+        loss_bce = torch.nn.BCELoss(reduction="none")(y_pred, y.expand(*y_pred.shape)).mean(dim=-1)
+        assert not(torch.isnan(loss_bce).any()) and not(torch.isinf(loss_bce).any())
+    except:
+        print(y.min(), y.max())
+        print(normalised_diff.min(), normalised_diff.max())
+        print(y_pred.min(), y_pred.max())
+        print(loss_bce.min(), loss_bce.max())
+        raise Exception
     # Modified 0-1 loss with a central band reserved for "equal" class
     y_shift, y_pred_shift = y - 0.5, y_pred - 0.5
     y_sign =      torch.sign(y_shift)      * (torch.abs(y_shift) > equal_band)
     y_pred_sign = torch.sign(y_pred_shift) * (torch.abs(y_pred_shift) > equal_band)
     loss_0_1 = torch.abs(y_sign - y_pred_sign).mean(dim=-1)
-    assert not(torch.isnan(loss_bce).any()) and not(torch.isinf(loss_bce).any())
     assert not(torch.isnan(loss_0_1).any()) and not(torch.isinf(loss_0_1).any())
     return loss_bce, loss_0_1
+
+def corr_to_dist(corr):
+    return (torch.sqrt if type(corr) == torch.Tensor else np.sqrt)(0.5 * (1 - corr))
+
+def graph(dist):
+    """Represent distance matrix as an undirected networkx graph"""
+    return nx.from_numpy_matrix(dist.cpu().numpy() if type(dist) == torch.Tensor else dist)
+
+def mds_graph_layout(g):
+    """Networkx graph layout using scikit-learn's multidimensional scaling tool"""
+    return MDS(max_iter=3000, eps=1e-9, dissimilarity="precomputed", n_init=10
+              ).fit(nx.to_numpy_matrix(g)).embedding_
+
+def draw_graph(g, **kwargs):
+    """Draw networkx graph representation of distance matrix using MDS layout"""
+    if "edgelist" not in kwargs: kwargs["edgelist"] = []
+    nx.draw(g, pos=mds_graph_layout(g), **kwargs)
