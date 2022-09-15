@@ -29,13 +29,14 @@ def recursive_update(d1, d2, i=None, block_overwrite=False, verbose=False):
 
 def build_params(paths, params=None, root_dir="", verbose=False):
     if params is None: params = {}
+    if root_dir: root_dir += "."
     update = {}
     for p in paths:
         if not p: continue # Ignore empty or NoneType
         i = None
         if "=" in p: # For parameter array
             p, i = p.split("=")
-        new = deepcopy(importlib.import_module(f"{root_dir}.{p}".replace("/",".")).P)
+        new = deepcopy(importlib.import_module(f"{root_dir}{p}".replace("/",".")).P)
         recursive_update(update, new, i=i, block_overwrite=True, verbose=False)
     recursive_update(params, update, verbose=verbose)
     return params
