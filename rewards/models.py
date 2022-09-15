@@ -51,6 +51,10 @@ class RewardNet(RewardModel):
         self.shift, self.scale = 0., 1.
 
     def _call_inner(self, features, normalise=True):
+        if torch.isnan(features).any():
+            print(features.min(dim=-1))
+            print(features.max(dim=-1))
+            raise Exception
         mu, log_std = reparameterise(self.net(features), clamp=("soft", -2, 2), params=True)
         # NOTE: Scaling up std output helps avoid extreme probabilities
         mu, std = mu.squeeze(-1), torch.exp(log_std).squeeze(-1) * 100.

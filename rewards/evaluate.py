@@ -27,6 +27,13 @@ def preference_loss(graph, reward_functions=None, returns=None, preference_eqn="
     assert preference_eqn == "bradley-terry", "Thurstone not implemented"
     if returns is None: _, returns = graph.rewards_by_ep_and_returns(reward_functions)
     return_diff = returns[:,[i for i,_ in graph.edges]] - returns[:,[j for _,j in graph.edges]]
+
+    if torch.isnan(return_diff).any():
+        print(returns.min(), returns.max())
+        print(return_diff.min(), return_diff.max())
+        print(np.mean(graph.ep_lengths))
+        raise Exception
+
     return bt_loss_inner(
         normalised_diff = return_diff / np.mean(graph.ep_lengths), # NOTE: Normalise by mean ep length
         y = torch.tensor([d["preference"] for _,_,d in graph.edges(data=True)], device=graph.device),
@@ -43,15 +50,8 @@ def rank_correlation(graph, reward_functions=None, returns=None):
 def bt_loss_inner(normalised_diff, y, equal_band=0.):
     y_pred = 1 / (1 + torch.exp(-normalised_diff))
     # Binary cross-entropy loss
-    try:
-        loss_bce = torch.nn.BCELoss(reduction="none")(y_pred, y.expand(*y_pred.shape)).mean(dim=-1)
-        assert not(torch.isnan(loss_bce).any()) and not(torch.isinf(loss_bce).any())
-    except:
-        print(y.min(), y.max())
-        print(normalised_diff.min(), normalised_diff.max())
-        print(y_pred.min(), y_pred.max())
-        print(loss_bce.min(), loss_bce.max())
-        raise Exception
+    loss_bce = torch.nn.BCELoss(reduction="none")(y_pred, y.expand(*y_pred.shape)).mean(dim=-1)
+    assert not(torch.isnan(loss_bce).any()) and not(torch.isinf(loss_bce).any())
     # Modified 0-1 loss with a central band reserved for "equal" class
     y_shift, y_pred_shift = y - 0.5, y_pred - 0.5
     y_sign =      torch.sign(y_shift)      * (torch.abs(y_shift) > equal_band)
