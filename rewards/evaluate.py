@@ -27,13 +27,6 @@ def preference_loss(graph, reward_functions=None, returns=None, preference_eqn="
     assert preference_eqn == "bradley-terry", "Thurstone not implemented"
     if returns is None: _, returns = graph.rewards_by_ep_and_returns(reward_functions)
     return_diff = returns[:,[i for i,_ in graph.edges]] - returns[:,[j for _,j in graph.edges]]
-
-    if torch.isnan(return_diff).any():
-        print(returns.min(), returns.max())
-        print(return_diff.min(), return_diff.max())
-        print(np.mean(graph.ep_lengths))
-        raise Exception
-
     return bt_loss_inner(
         normalised_diff = return_diff / np.mean(graph.ep_lengths), # NOTE: Normalise by mean ep length
         y = torch.tensor([d["preference"] for _,_,d in graph.edges(data=True)], device=graph.device),

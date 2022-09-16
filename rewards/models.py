@@ -51,10 +51,6 @@ class RewardNet(RewardModel):
         self.shift, self.scale = 0., 1.
 
     def _call_inner(self, features, normalise=True):
-        if torch.isnan(features).any():
-            print(features.min(dim=-1))
-            print(features.max(dim=-1))
-            raise Exception
         mu, log_std = reparameterise(self.net(features), clamp=("soft", -2, 2), params=True)
         # NOTE: Scaling up std output helps avoid extreme probabilities
         mu, std = mu.squeeze(-1), torch.exp(log_std).squeeze(-1) * 100.
@@ -149,15 +145,14 @@ class RewardTree(RewardModel):
         else: return hr.tree.Tree(name=name, root=hr.node.Node(space),
                                   split_dims=split_dims, eval_dims=[r_d])
 
-    def add_to_forest(self, tree_dict):
+    def add_to_forest(self, tree_dict, depopulate=False):
         tree = tree_dict["tree"]
         print(self.rules(tree, pred_dims="reward", sf=5, dims_as_indices=False))
         tree_dict["r"] = torch.tensor(tree.gather(("mean","reward")), device=self.device).float()
         tree_dict["var"] = torch.tensor(tree.gather(("var","reward")), device=self.device).float()
         tree_dict["r"][torch.isnan(tree_dict["r"])] = 0. # NOTE: Reward defaults to 0. in the absence of data
         tree_dict["var"][torch.isnan(tree_dict["var"])] = 0.
-        # NOTE: Depopulate space and tree to reduce memory requirement
-        tree.space.data = None; tree.depopulate()
+        if depopulate: tree.space.data = None; tree.depopulate()
         self.forest.insert(0, tree_dict)
 
     def update(self, graph, mode, history_key):
@@ -274,11 +269,10 @@ class RewardTree(RewardModel):
         """
         if self.P["split_by_preference"]:
             # NOTE: graph must be the same one used to populate the tree!
-            # if self.P["loss_func"] == "0-1" and fast_0_1: # TODO: Clean this up
-            #     tree.split_finder = self.preference_based_split_finder_fast_0_1
-            # else:
-            #     tree.split_finder = self.preference_based_split_finder
-            tree.split_finder = self.preference_based_split_finder_fast_0_1
+            if self.P["loss_func"] == "0-1" and fast_0_1:
+                tree.split_finder = self.preference_based_split_finder_fast_0_1
+            else:
+                tree.split_finder = self.preference_based_split_finder
             # NOTE: self._current_loss is unused by preference_based_split_finder_fast_0_1
             mean, var, counts, self._i_list, self._j_list, self._y = self.make_loss_data_structures(tree, graph)
             assert counts.shape[0] == 1; tree.root.counts = counts[0]
