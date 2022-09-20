@@ -57,9 +57,9 @@ class RewardNet(RewardModel):
         if normalise: mu, std = (mu - self.shift) / self.scale, std / self.scale
         return mu, torch.pow(std, 2.), std
 
-    def return_with_var(self, states=None, actions=None, next_states=None, features=None):
+    def return_with_var(self, states=None, actions=None, next_states=None, features=None, normalise=True):
         if features is None: features = self.featuriser(states, actions, next_states)
-        mu, var, _ = self._call_inner(features)
+        mu, var, _ = self._call_inner(features, normalise)
         return mu.sum(), var.sum()
 
     def update(self, graph, mode, history_key=None):
@@ -91,7 +91,7 @@ class RewardNet(RewardModel):
                 in_batch = abs_A_batch.sum(axis=0) > 0
                 g_pred, var_pred = torch.zeros(n_train, device=self.device), torch.zeros(n_train, device=self.device)
                 for i in range(n_train):
-                    if in_batch[i]: g_pred[i], var_pred[i] = self.return_with_var(features=features[i])
+                    if in_batch[i]: g_pred[i], var_pred[i] = self.return_with_var(features=features[i], normalise=False)
                 if self.P["preference_eqn"] == "thurstone":
                     pair_diff = A_batch @ g_pred
                     sigma = torch.sqrt(abs_A_batch @ var_pred)
