@@ -66,9 +66,8 @@ class OracleInterface(Interface):
 
     (1) "Myopic" recency bias with discount factor gamma
     (2) Query skipping if max(ret_i, ret_j) is below d_skip
-        - NOTE: This reduces the effective feedback budget
-    (3) Gaussian noise with standard deviation sigma 
-        - Analogous to beta in Bradley-Terry model
+        - NOTE: This may reduce the effective feedback budget
+    (3) Nonzero beta in Bradley-Terry model, or Gaussian noise with standard deviation in Thurstone's model
     (4) Random flipping of P_i with probability epsilon
     (5) Equal preference expression if abs(P_i - 0.5) is below p_equal
 
@@ -82,12 +81,14 @@ class OracleInterface(Interface):
     """
 
     # Defaults
-    P = {"gamma": 1, "sigma": 0, "d_skip": -float("inf"), "p_equal": 0, "epsilon": 0, "return_P_i": False}
+    P = {"gamma": 1, "beta": 0, "sigma": 0, "d_skip": -float("inf"), "p_equal": 0, "epsilon": 0, "return_P_i": False}
 
     def __init__(self, graph, P):
         Interface.__init__(self, graph)
         self.oracle = P["oracle"]
         self.P.update(P)
+        assert not (self.P["beta"] and self.P["sigma"]), "Cannot simultaneously use both " \
+                                                         "beta (Bradley-Terry) and sigma (Thurstone)"
 
     def __call__(self, i, j):
         ep_i, ep_j = self.graph.nodes[i], self.graph.nodes[j]
@@ -95,13 +96,15 @@ class OracleInterface(Interface):
         ret_j = self.myopic_sum(self.oracle(ep_j["states"], ep_j["actions"], ep_j["next_states"]))
         if max(ret_i, ret_j) < self.P["d_skip"]:  return "skip"
         diff = ret_i - ret_j
-        if self.P["sigma"] == 0: P_i = 0.5 if diff == 0 else 1. if diff > 0 else 0.
-        else:                    P_i = norm.cdf(diff / self.P["sigma"])
+        if self.P["beta"] > 0:    P_i = (1. / (1. + (-diff / self.P["beta"]).exp())).item() # Bradley-Terry
+        elif self.P["sigma"] > 0: P_i = norm.cdf(diff / self.P["sigma"]) # Thurstone
+        else:                     P_i = 0.5 if diff == 0 else 1. if diff > 0 else 0. # Deterministic
         if self.rng.random() <= self.P["epsilon"]: P_i = 1. - P_i
-        if self.P["return_P_i"]:                   return P_i
-        elif abs(P_i - 0.5) <= self.P["p_equal"]:  return 0.5
-        elif self.rng.random() < P_i:              return 1.
-        else:                                      return 0.
+        info = {"confidence": max(P_i, 1-P_i)}
+        if self.P["return_P_i"]:                   return P_i, info
+        elif abs(P_i - 0.5) <= self.P["p_equal"]:  return 0.5, info
+        elif self.rng.random() < P_i:              return 1.0, info
+        else:                                      return 0.0, info
 
     def myopic_sum(self, rewards):
         if self.P["gamma"] == 1: return sum(rewards)

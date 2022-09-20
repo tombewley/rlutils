@@ -6,6 +6,7 @@ from .explainer import Explainer
 
 import os
 from torch import save as pt_save, load as pt_load, device, cuda
+from numpy import mean
 
 
 class PbrlObserver:
@@ -122,6 +123,8 @@ class PbrlObserver:
                             corr_r, corr_g, _, _ = epic(self.offline_graph, rewards_by_ep=offline_rewards)
                             logs["offline_reward_correlation"], logs["offline_return_correlation"] = corr_r[0,1].item(), corr_g[0,1].item()
                             logs["offline_rank_correlation"] = rank_correlation(self.offline_graph, returns=offline_returns)[0,1]
+                        # Report mean oracle confidence across the latest batch
+                        logs["oracle_confidence"] = mean([d["confidence"] for _,_,d in self.graph.edges(data=True) if d["history_key"]==(ep_num+1)])
                     self.relabel_memory() # If applicable, relabel the agent's replay memory using the updated reward
                 self._batch_num += 1 
                 self._n_on_prev_batch = len(self.graph)

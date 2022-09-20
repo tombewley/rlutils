@@ -60,12 +60,13 @@ class PreferenceGraph:
         # TODO: Storing both states and next_states is wasteful! Just store T+1 states alongside T actions
         self._graph.add_node(len(self._graph), states=states, actions=actions, next_states=next_states, **kwargs)
 
-    def add_preference(self, i, j, preference, history_key=None):
+    def add_preference(self, i, j, preference, info):
         assert i != j, f"Self-loop preference: {i} = {j}"
         assert i in self._graph and j in self._graph, f"Invalid episode index: {i}, {j}"
         assert (not self._graph.has_edge(i, j)) and (not self._graph.has_edge(j, i)), f"Already have preference for ({i}, {j})"
         assert type(preference) == float and 0. <= preference <= 1., f"Invalid preference value: {preference}"
-        self._graph.add_edge(i, j, history_key=history_key, preference=preference)
+        if "history_key" not in info: info["history_key"] = None
+        self._graph.add_edge(i, j, preference=preference, **info)
 
     def preference_data_structures(self, unconnected_ok=False):
         """
