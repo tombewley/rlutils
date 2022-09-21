@@ -94,7 +94,7 @@ class OracleInterface(Interface):
         ep_i, ep_j = self.graph.nodes[i], self.graph.nodes[j]
         ret_i = self.myopic_sum(self.oracle(ep_i["states"], ep_i["actions"], ep_i["next_states"]))
         ret_j = self.myopic_sum(self.oracle(ep_j["states"], ep_j["actions"], ep_j["next_states"]))
-        if max(ret_i, ret_j) < self.P["d_skip"]:  return "skip"
+        if max(ret_i, ret_j) < self.P["d_skip"]:   return "skip", {}
         diff = ret_i - ret_j
         if self.P["beta"] > 0:    P_i = (1. / (1. + (-diff / self.P["beta"]).exp())).item() # Bradley-Terry
         elif self.P["sigma"] > 0: P_i = norm.cdf(diff / self.P["sigma"]) # Thurstone
