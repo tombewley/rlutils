@@ -37,14 +37,16 @@ class RewardModel:
 
 
 class RewardNet(RewardModel):
-    def __init__(self, P):
+    def __init__(self, P,
+        # 3x 256 hidden units used in PEBBLE paper
+        net_code=[(None, 256), "R", (256, 256), "R", (256, 256), "R", (256, None)]
+        ):
         RewardModel.__init__(self, P)
         self.net = SequentialNetwork(device=self.device,
             input_space=[Space((len(self.featuriser.names),))],
             # Mean and log standard deviation
             output_size=2,
-            # 3x 256 hidden units used in PEBBLE paper
-            code=[(None, 256), "R", (256, 256), "R", (256, 256), "R", (256, None)],
+            code=net_code,
             # 3e-4 used in PEBBLE paper
             lr=3e-4, 
             )
@@ -108,6 +110,11 @@ class RewardNet(RewardModel):
         self.shift = all_rewards.max() if self.P["negative_rewards"] else all_rewards.min()
         self.scale = all_rewards.std()
         return {}
+
+
+class LinearRewardModel(RewardNet):
+    def __init__(self, P):
+        RewardNet.__init__(self, P, net_code=[(None, None)])
 
 
 class RewardTree(RewardModel):
