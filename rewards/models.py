@@ -38,8 +38,8 @@ class RewardModel:
 
 class RewardNet(RewardModel):
     def __init__(self, P,
-        # 3x 256 hidden units used in PEBBLE paper
-        net_code=[(None, 256), "R", (256, 256), "R", (256, 256), "R", (256, None)]
+        # 3x 256 hidden units and leaky ReLU used in PEBBLE paper
+        net_code=[(None, 256), "LR", (256, 256), "LR", (256, 256), "LR", (256, None)]
         ):
         RewardModel.__init__(self, P)
         self.net = SequentialNetwork(device=self.device,

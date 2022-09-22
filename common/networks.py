@@ -66,6 +66,7 @@ def code_parser(code, input_space, output_size):
             if o is None: o = output_size 
             layers.append(nn.Linear(i, o))
         elif l == "R":          layers.append(nn.ReLU())
+        elif l == "LR":         layers.append(nn.LeakyReLU())
         elif l == "T":          layers.append(nn.Tanh())
         elif l == "S":          layers.append(nn.Softmax(dim=1))
         elif l[0] == "D":       layers.append(nn.Dropout(p=l[1]))
