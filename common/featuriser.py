@@ -10,6 +10,8 @@ class Featuriser:
         self.P = P
         self.names = [f.__name__ for f in self.P["features"]] if "features" in self.P else self.P["feature_names"]
 
+    def __repr__(self): return f"Featuriser: S x A x S -> ({(', ').join(self.names)})"
+
     def __call__(self, states, actions, next_states):
         if "preprocessor" in self.P:
             states, actions, next_states = self.P["preprocessor"](states.clone(), actions.clone(), next_states.clone())
