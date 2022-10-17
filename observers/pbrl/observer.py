@@ -16,7 +16,7 @@ class PbrlObserver:
     """
     def __init__(self, P, run_names=None):
         self.P = {} if P is None else P
-        self.run_names = run_names if run_names is not None else []
+        self.run_names = run_names if run_names is not None else [None]
         # Preference graph, reward model, trajectory pair sampler, preference collection interface and explainer are all modular
         self.graph = PreferenceGraph()
         self.model = self.P["model"]["class"](self.P["model"]) if ("model" in self.P and "class" in self.P["model"]) else None
@@ -128,8 +128,8 @@ class PbrlObserver:
                     self.relabel_memory() # If applicable, relabel the agent's replay memory using the updated reward
                 self._batch_num += 1 
                 self._n_on_prev_batch = len(self.graph)
-            # Periodically log and save out
-            if self.explainer.P and (ep_num+1) % self.explainer.P["freq"] == 0: self.explainer(history_key=(ep_num+1))
+        # Periodically log and save out
+        if self.explainer.P and (ep_num+1) % self.explainer.P["freq"] == 0: self.explainer(history_key=(ep_num+1))
         if self._saving and (ep_num+1) % self.P["save_freq"] == 0: self.save(history_key=(ep_num+1))
         return logs
 
