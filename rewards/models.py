@@ -20,9 +20,10 @@ bce_loss = torch.nn.BCELoss()
 
 
 class RewardModel:
+    P = {}
     def __init__(self, P):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.P = P
+        self.P.update(P)
         self.featuriser = Featuriser(self.P["featuriser"])
         self.seed()
 
@@ -38,17 +39,16 @@ class RewardModel:
 
 class RewardNet(RewardModel):
     def __init__(self, P,
-        # 3x 256 hidden units and leaky ReLU used in PEBBLE paper
-        net_code=[(None, 256), "LR", (256, 256), "LR", (256, 256), "LR", (256, None)]
+        # 3x 256 hidden units, leaky ReLU, lr=3e-4 used in PEBBLE paper
+        net_code=[(None, 256), "LR", (256, 256), "LR", (256, 256), "LR", (256, None)],
+        lr=3e-4
         ):
         RewardModel.__init__(self, P)
         self.net = SequentialNetwork(device=self.device,
             input_space=[Space((len(self.featuriser.names),))],
             # Mean and log standard deviation
             output_size=2,
-            code=net_code,
-            # 3e-4 used in PEBBLE paper
-            lr=3e-4, 
+            code=net_code, lr=lr
             )
         self.shift, self.scale = 0., 1.
 
@@ -64,7 +64,10 @@ class RewardNet(RewardModel):
         mu, var, _ = self._call_inner(features, normalise)
         return mu.sum(), var.sum()
 
-    def update(self, graph, mode, history_key=None):
+    def optimise(self, loss):
+        self.net.optimise(loss, retain_graph=False)
+
+    def update(self, graph, mode="preference", history_key=None):
         if mode == "reward":
             states, actions, next_states = graph.states, graph.actions, graph.next_states
             rewards = torch.cat([ep["oracle_rewards"] for _,ep in graph.nodes(data=True)])
@@ -104,7 +107,7 @@ class RewardNet(RewardModel):
                     g_pairs = torch.vstack([g_pred[[i_list[k], j_list[k]]] for k in batch])
                     log_y_pred = torch.nn.functional.log_softmax(g_pairs, dim=1)
                     loss = -(torch.column_stack([y_batch, 1-y_batch]) * log_y_pred).sum() / y_batch.shape[0]
-            self.net.optimise(loss, retain_graph=False)
+            self.optimise(loss)
         # Normalise rewards to have a common valence on the training set, with unit standard deviation
         with torch.no_grad(): all_rewards, _, _ = self._call_inner(features_cat, normalise=False)
         self.shift = all_rewards.max() if self.P["negative_rewards"] else all_rewards.min()
@@ -118,6 +121,22 @@ class LinearRewardModel(RewardNet):
 
 
 class RewardTree(RewardModel):
+    P = {
+        "split_by_preference": True,
+        "preference_eqn": "bradley-terry",
+        "loss_func": "0-1",
+        "trees_per_update": 1,
+        "prune_ratio": None,
+        "m_max": 100,
+        "alpha": 0.005,
+        "min_samples_leaf": 1,
+        "split_dim_entropy": 0.,
+        "num_from_queue": float("inf"),
+        "store_all_qual": False,
+        "forest_size": 1,
+        "sort_forest_by": "age",
+        "negative_rewards": False
+    }
     def __init__(self, P):
         RewardModel.__init__(self, P)
         # Bring in some convenient visualisation methods
@@ -162,7 +181,7 @@ class RewardTree(RewardModel):
         if depopulate: tree.space.data = None; tree.depopulate()
         self.forest.insert(0, tree_dict)
 
-    def update(self, graph, mode, history_key):
+    def update(self, graph, mode="preference", history_key=None):
         # Set factor for scaling rewards when computing preference loss
         self._mean_ep_length = np.mean(graph.ep_lengths)
         # Determine size of grow and prune subgraphs if applicable
