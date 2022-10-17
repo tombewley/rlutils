@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 
 class PreferenceGraph:
     """
-    xxx
+    Class for storing a preference dataset.
     """
     def __init__(self):
         self.device = device("cuda" if cuda.is_available() else "cpu")
@@ -85,41 +85,62 @@ class PreferenceGraph:
             i_list.append(i_c); j_list.append(j_c)
         return sg.states, sg.actions, sg.next_states, A, i_list, j_list, y
 
-    def show(self, figsize=(12, 12), model=None):
+    def show(self, figsize=(12, 12), model_return=None, model=None, do_oracle_return=False,
+             cmap_lims=None, label_font_family="sans-serif"):
         vmin, vmax = float("inf"), -float("inf")
-        if model is not None:
+        if model_return is None and model is not None:
             model_return = [self.model(s, a, ns).sum() for s, a, ns in zip(self.graph.states, self.graph.actions, self.graph.next_states)]
+        if model_return is not None:
             vmin, vmax = min(vmin, min(model_return)), max(vmax, max(model_return))
-        else: model_return = None
-        try:
+        if do_oracle_return:
             oracle_return = list(nx.get_node_attributes(self, "oracle_return").values())
             vmin, vmax = min(vmin, min(oracle_return)), max(vmax, max(oracle_return))
-        except: oracle_return = None
+        if cmap_lims is None: cmap_lims = (vmin, vmax)
 
         """Outer colour by model return"""
         plt.figure(figsize=figsize)
         pos = nx.drawing.nx_agraph.graphviz_layout(self._graph, prog="neato")
-        nx.draw_networkx_nodes(self._graph, pos=pos,
+        node_collection = nx.draw_networkx_nodes(self._graph, pos=pos,
             node_size=500,
             node_color=model_return if model_return is not None else "gray",
-            cmap="coolwarm_r", vmin=vmin, vmax=vmax
+            cmap="coolwarm_r", vmin=cmap_lims[0], vmax=cmap_lims[1]
         )
         """Inner colour by oracle return"""
-        node_collection = nx.draw_networkx_nodes(self._graph, pos=pos,
-            node_size=250,
-            node_color=oracle_return if oracle_return is not None else "gray",
-            cmap="coolwarm_r", vmin=vmin, vmax=vmax,
-            linewidths=1, edgecolors="w"
+        if do_oracle_return:
+            nx.draw_networkx_nodes(self._graph, pos=pos,
+                node_size=250,
+                node_color=oracle_return,
+                cmap="coolwarm_r", vmin=cmap_lims[0], vmax=cmap_lims[1],
+                linewidths=1, edgecolors="w"
+            )
+        nx.draw_networkx_labels(self._graph, pos=pos,
+            labels={i: i+1 for i in self.nodes},
+            font_family=label_font_family,
+            font_size=20
         )
-        nx.draw_networkx_labels(self._graph, pos=pos)
-        """Edge colour by preference value"""
-        edge_collection = nx.draw_networkx_edges(self._graph, pos=pos,
-            node_size=500,
-            width=2, arrowsize=20,
-            edge_color=list(nx.get_edge_attributes(self._graph, "preference").values()),
-            connectionstyle="arc3,rad=0.1",
-            edge_cmap=plt.cm.coolwarm_r, edge_vmin=0., edge_vmax=1.
-        )
+        if False:
+            """Edge colour by preference value"""
+            edge_collection = nx.draw_networkx_edges(self._graph, pos=pos,
+                node_size=500,
+                width=2, arrowsize=20,
+                edge_color=list(nx.get_edge_attributes(self._graph, "preference").values()),
+                # connectionstyle="arc3,rad=0.1",
+                edge_cmap=plt.cm.coolwarm_r, edge_vmin=0., edge_vmax=1.
+            )
+        if True:
+            """Edge direction by preference value (requires 0-1 preferences)"""
+            edgelist = []
+            for i, j, d in self.edges(data=True):
+                if d["preference"] == 0: edgelist.append((i, j))
+                elif d["preference"] == 1: edgelist.append((j, i))
+                else: raise Exception("Only works with 0-1 preferences")
+            edge_collection = nx.draw_networkx_edges(self._graph, pos=pos,
+                edgelist=edgelist,
+                node_size=500,
+                width=1.5, arrowsize=15,
+                edge_color="#b3b3b3"
+            )
+
         # weights = list(nx.get_edge_attributes(self._graph, "preference").values())
         # for i, e in enumerate(edge_collection): e.set_alpha(weights[i])
         # nx.draw_networkx_edge_labels(self._graph, pos=pos, label_pos=0.4, font_size=6,
