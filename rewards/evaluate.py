@@ -49,7 +49,7 @@ def bt_loss_inner(normalised_diff, y, equal_band=0.):
     y_shift, y_pred_shift = y - 0.5, y_pred - 0.5
     y_sign =      torch.sign(y_shift)      * (torch.abs(y_shift) > equal_band)
     y_pred_sign = torch.sign(y_pred_shift) * (torch.abs(y_pred_shift) > equal_band)
-    loss_0_1 = torch.abs(y_sign - y_pred_sign).mean(dim=-1)
+    loss_0_1 = torch.abs(y_sign - y_pred_sign).mean(dim=-1) / 2
     assert not(torch.isnan(loss_0_1).any()) and not(torch.isinf(loss_0_1).any())
     return loss_bce, loss_0_1
 
