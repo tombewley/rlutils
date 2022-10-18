@@ -2,7 +2,7 @@ from .networks import SequentialNetwork
 from .utils import col_concat, reparameterise
 
 import torch
-from random import choice
+from random import seed as random_seed, choice
 from gym.spaces.box import Box
 
 
@@ -32,9 +32,9 @@ class DynamicsModel:
             self.nets = nets
         else: # Create new ensemble of nets.
             self.nets = [SequentialNetwork(code=code, input_space=[observation_space, action_space],
-                                        output_size=observation_space.shape[0]*(2 if self.probabilistic else 1),
-                                        normaliser="box_bounds", lr=lr, device=device) # NOTE: Using box_bounds normalisation.
-                        for _ in range(ensemble_size)]
+                                           output_size=observation_space.shape[0]*(2 if self.probabilistic else 1),
+                                           normaliser="box_bounds", lr=lr, device=device) # NOTE: Using box_bounds normalisation.
+                         for _ in range(ensemble_size)]
         self.horizon = self.P["horizon_params"][1] # Initial planning horizon (NOTE: indexing assumption).
         self.action_dim = action_space.shape[0]
         # Weight model loss function by bounds of observation space.
@@ -43,6 +43,10 @@ class DynamicsModel:
         if self.probabilistic: self.log_std_clamp = ("hard", -20, 2) # ("soft", -20, 2)
         # Tracking variables.
         self.num_updates = 0
+
+    def seed(self, seed):
+        if self.probabilistic: raise NotImplementedError("Seeding not implemented for .rsample()")
+        random_seed(seed)
 
     def predict(self, states, actions, ensemble_index, params=False):
         """

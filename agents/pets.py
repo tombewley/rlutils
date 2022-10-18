@@ -40,6 +40,11 @@ class PetsAgent(Agent):
         self.ep_action_stds, self.ep_losses = [], []
         self.warm_start_mean = None
 
+    def seed(self, seed):
+        self.model.seed(seed)
+        self.rng = torch.Generator(device=self.device)
+        self.rng.manual_seed(seed)
+
     def act(self, state, explore=True, do_extra=False):
         """Either random or model-based action selection."""
         with torch.no_grad():
@@ -71,8 +76,8 @@ class PetsAgent(Agent):
                         mean[i] = (1 - self.P["cem_alpha"]) * mean[i-1] + self.P["cem_alpha"] * mean_elite
                         std[i] = (1 - self.P["cem_alpha"]) * std[i-1] + self.P["cem_alpha"] * std_elite
                     # Sample action sequences from truncated normal parameterised by mean/std and action space bounds.
-                    actions[i] = truncated_normal(actions[i], mean=mean[i], std=std[i], a=self.action_space_low, b=self.action_space_high)
-                    # Propogate action sequences through the model.
+                    actions[i] = truncated_normal(actions[i], mean=mean[i], std=std[i], a=self.action_space_low, b=self.action_space_high, rng=self.rng)
+                    # Propagate action sequences through the model.
                     s, _, rewards = self.model.rollout(state, actions=actions[i], ensemble_index="ts1_a")
                     returns[i] = (gamma_range * rewards).sum(axis=1).squeeze()
                     elites = returns[i].topk(self.P["cem_elites"]).indices

@@ -24,7 +24,7 @@ def reparameterise(x, clamp=("hard", -20, 2), params=False):
         log_std = clamp[2] - torch.nn.functional.softplus(clamp[2] - log_std)
     return (mean, log_std) if params else torch.distributions.Normal(mean, torch.exp(log_std))
 
-def truncated_normal(tensor, mean, std, a, b):
+def truncated_normal(tensor, mean, std, a, b, rng):
     """
     Sample from a truncated normal distribution.
     Adapted from torch.nn.init._no_grad_trunc_normal_.
@@ -35,7 +35,7 @@ def truncated_normal(tensor, mean, std, a, b):
         l = norm_cdf((a - mean) / std)
         u = norm_cdf((b - mean) / std)
         # Uniformly fill tensor with values in [0, 1], then transform to [2l-1, 2u-1]
-        tensor.uniform_()
+        tensor.uniform_(generator=rng)
         tensor = 2 * (l + tensor * (u - l)) - 1
         # Use inverse cdf transform for normal distribution to get truncated standard normal
         tensor.erfinv_()
