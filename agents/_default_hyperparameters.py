@@ -91,6 +91,7 @@ default_hyperparameters = {
     "cem_elites": 10,
     "cem_alpha": 0.1, # Update rate for CEM sampling distribution.
     "cem_temperature": 0.5, # Sharpness of elite weighting for MPPI extension.
+    "cem_initial_inertia": 0., # Action inertia used to generate first iteration of particles.
     "gamma": 0.99, # Discount factor.
     "rollout": {
       "horizon_params": ("constant", 20),

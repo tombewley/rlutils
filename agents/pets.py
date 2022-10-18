@@ -77,6 +77,11 @@ class PetsAgent(Agent):
                         std[i] = (1 - self.P["cem_alpha"]) * std[i-1] + self.P["cem_alpha"] * std_elite
                     # Sample action sequences from truncated normal parameterised by mean/std and action space bounds.
                     actions[i] = truncated_normal(actions[i], mean=mean[i], std=std[i], a=self.action_space_low, b=self.action_space_high, rng=self.rng)
+                    if i == 0 and self.P["cem_initial_inertia"]:
+                        # Optionally use inertia to smooth actions on first iteration; may aid exploration in some envs.
+                        k = self.P["cem_initial_inertia"]
+                        for t in range(1, actions[i].shape[1]):
+                            actions[i,:,t] = k * actions[i,:,t-1] + (1 - k) * actions[i,:,t]
                     # Propagate action sequences through the model.
                     s, _, rewards = self.model.rollout(state, actions=actions[i], ensemble_index="ts1_a")
                     returns[i] = (gamma_range * rewards).sum(axis=1).squeeze()
