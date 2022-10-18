@@ -15,7 +15,7 @@ class PetsAgent(Agent):
         Advances in Neural Information Processing Systems 31 (2018).
 
     Also likely to retain some details of the model-based component of MBMF. From:
-        "Neural Network Dynamics for Model-Based Deep Reinforcement Learning with Model-Free Fine-Tuning"
+        "Neural Network Dynamics for Model-Based Deep Reinforcement Learning with Model-Free Fine-Tuning"
     """
     def __init__(self, env, hyperparameters):
         assert "reward" in hyperparameters, f"{type(self).__name__} requires a reward function."
