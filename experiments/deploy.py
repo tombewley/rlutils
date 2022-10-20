@@ -1,8 +1,7 @@
-from ..agents.stable_baselines import StableBaselinesAgent
 from .. import from_numpy
+from ..observers.loggers import SumLogger
+from ..agents.stable_baselines import StableBaselinesAgent
 
-import torch 
-import numpy as np
 from tqdm import tqdm
 from gym import wrappers
 
@@ -35,24 +34,18 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
         run = wandb.init(**wandb_config,
             config={**agent.P, **P, **{n: o.P for n, o in P["observers"].items()}})
         run_name = run.name
-        # if train: # TODO: Weight monitoring causes an error with STEVE.
-            # try: 
-                # if type(agent.Q) == list: # Handling Q ensembles.
-                    # for Q in agent.Q: wandb.watch(Q)
-                # else:
-                # wandb.watch(agent.Q)
-            # except: pass
-            # try: wandb.watch(agent.pi)
-            # except: pass
     else:
         import time; run_id, run_name = None, time.strftime("%Y-%m-%d_%H-%M-%S")
+
+    # Add observer for logging per-episode returns.
+    P["observers"]["return_logger"] = SumLogger({"name": "return"})
 
     # Create directory for saving and tell observers what the run name is.
     if do_checkpoints: import os; save_dir += f"/{run_name}"; os.makedirs(save_dir, exist_ok=True) 
     for o in P["observers"].values(): o.run_names.append(run_name)
 
     # Add temporary wrappers to environment. NOTE: These are discarded when deployment is complete.
-    env_before_wrappers = agent.env
+    env_inside_wrappers = agent.env
     if "episode_time_limit" in P: # Time limit.
         agent.env = wrappers.TimeLimit(agent.env, P["episode_time_limit"])
     if "video_freq" in P and P["video_freq"] > 0: # Video recording. NOTE: This must be the outermost wrapper.
@@ -76,14 +69,13 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
             state_torch = from_numpy(state, device=agent.device)
             
             # Iterate through timesteps.
-            t = 0; done = False; return_ = 0
+            t = 0; done = False
             while not done:
                 
                 # Get action and advance state.
                 action, extra = agent.act(state_torch, explore=train, do_extra=do_extra) # If not in training mode, turn exploration off.
                 next_state, reward, done, info = agent.env.step(action)
                 next_state_torch = from_numpy(next_state, device=agent.device)
-                return_ += (sum(extra["reward_components"]) if "reward_components" in extra else np.float64(reward).sum())
                 
                 # Perform some agent-specific operations on each timestep if training.
                 if train: agent.per_timestep(state_torch, action, reward, next_state_torch, done)
@@ -104,7 +96,7 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
             state = agent.env.reset() # PbrlObserver requires env.reset() here due to video save behaviour.
 
             # Perform some agent- and observer-specific operations on each episode, which may create logs.
-            logs = {"return": return_}
+            logs = {}
             if train: logs.update(agent.per_episode())    
             elif hasattr(agent, "per_episode_deploy"): logs.update(agent.per_episode_deploy())
             for o in P["observers"].values(): logs.update(o.per_episode(ep))
@@ -119,6 +111,6 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
         # Clean up.
         if do_wandb: wandb.finish()
         agent.env.close()
-    agent.env = env_before_wrappers
+    agent.env = env_inside_wrappers
 
     return run_id, run_name # Return run ID and name for reference.

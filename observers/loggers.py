@@ -1,31 +1,16 @@
-import numpy as np
-
-
 class SumLogger:
     def __init__(self, P): 
         self.P = P
         self.run_names = []
 
     def per_timestep(self, ep, t, state, action, next_state, reward, done, info, extra):
-        if self.P["source"] == "info": c = info[self.P["key"]]
-        elif self.P["source"] == "extra": c = extra[self.P["key"]]
-        if t == 0: self.sums = np.array(c)
-        else: self.sums += c
+        if   self.P["name"] == "return":    v = reward
+        elif self.P["name"] == "ep_length": v = 1
+        elif self.P["source"] == "info":    v = info[self.P["key"]]
+        elif self.P["source"] == "extra":   v = extra[self.P["key"]]
+        if t == 0: self.sum = v
+        else: self.sum += v
         
     def per_episode(self, ep): 
-        return {f"{self.P['name']}_{c}": r for c, r in enumerate(self.sums)}
-
-
-class EpLengthLogger:
-    def __init__(self):
-        self.P = {}
-        self.run_names = []
-        self.t = 0
-
-    def per_timestep(self, *args):
-        self.t += 1
-
-    def per_episode(self, ep):
-        log = {"ep_length": self.t}
-        self.t = 0
-        return log
+        try:    return {f"{self.P['name']}_{i}": v for i, v in enumerate(self.sum)} # If iterable
+        except: return {self.P["name"]: self.sum} # Otherwise
