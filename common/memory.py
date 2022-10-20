@@ -1,8 +1,10 @@
-from math import e
+from .utils import from_numpy
+
 import torch
-import numpy as np
+from numpy import ndarray
 from collections import namedtuple
 import random
+
 
 # Structure of a memory element.
 element = namedtuple('element', ('state', 'action', 'next_state', 'done', 'reward'))
@@ -29,15 +31,15 @@ class ReplayMemory:
     def add(self, state, action, reward, next_state, done):
         """Save a transition."""
         if type(action) == int: action_dtype = torch.int64
-        elif type(action) == np.ndarray: action_dtype = torch.float
-        action = torch.tensor(action, device=state.device, dtype=action_dtype).unsqueeze(0)
-        done = torch.tensor(done, device=state.device, dtype=torch.bool).unsqueeze(0)
+        elif type(action) == ndarray: action_dtype = torch.float
+        action = from_numpy(action, device=state.device, dtype=action_dtype)
+        done = from_numpy(done, device=state.device, dtype=torch.bool)
         el = [state, action, next_state, done]
         # Save reward if applicable.
         if not self.lazy_reward: 
             if self.reward is not None: 
                 with torch.no_grad(): el.append(self.reward(state, action, next_state)) # Eagerly compute intrinsic reward.           
-            else: el.append(torch.tensor(reward, device=state.device, dtype=torch.float).unsqueeze(0))
+            else: el.append(from_numpy(reward, device=state.device))
         # Extend memory if capacity not yet reached.
         if len(self) < self.capacity: self.memory.append(None)
         # Overwrite current entry at this position.

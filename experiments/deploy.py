@@ -1,4 +1,5 @@
 from ..agents.stable_baselines import StableBaselinesAgent
+from .. import from_numpy
 
 import torch 
 import numpy as np
@@ -9,13 +10,13 @@ from gym import wrappers
 P_DEFAULT = {"num_episodes": int(1e6), "render_freq": 1}
 
 
-def train(agent, P=P_DEFAULT, renderer=None, wandb_config=None, save_dir="agents"):
+def train(agent, P=P_DEFAULT, wandb_config=None, save_dir="agents"):
     """
-    Shortcut for training; just calls deploy() with train=True.
+    Shortcut for training; just calls deploy with train=True.
     """
-    return deploy(agent, P, True, renderer, wandb_config, save_dir)
+    return deploy(agent, P, True, wandb_config, save_dir)
 
-def deploy(agent, P=P_DEFAULT, train=False, renderer=None, wandb_config=None, save_dir="agents"):
+def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"):
 
     do_extra = "do_extra" in P and P["do_extra"] # Whether or not to request extra predictions from the agent.
     do_wandb = wandb_config is not None
@@ -72,7 +73,7 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, wandb_config=None, sa
             if render_this_ep: agent.env.render()
             
             # Get state in PyTorch format expected by agent.
-            state_torch = renderer.get(first=True) if renderer else torch.from_numpy(state).float().to(agent.device).unsqueeze(0)
+            state_torch = from_numpy(state, device=agent.device)
             
             # Iterate through timesteps.
             t = 0; done = False; return_ = 0
@@ -81,7 +82,7 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, wandb_config=None, sa
                 # Get action and advance state.
                 action, extra = agent.act(state_torch, explore=train, do_extra=do_extra) # If not in training mode, turn exploration off.
                 next_state, reward, done, info = agent.env.step(action)
-                next_state_torch = renderer.get() if renderer else torch.from_numpy(next_state).float().to(agent.device).unsqueeze(0)
+                next_state_torch = from_numpy(next_state, device=agent.device)
                 return_ += (sum(extra["reward_components"]) if "reward_components" in extra else np.float64(reward).sum())
                 
                 # Perform some agent-specific operations on each timestep if training.
@@ -117,7 +118,6 @@ def deploy(agent, P=P_DEFAULT, train=False, renderer=None, wandb_config=None, sa
 
         # Clean up.
         if do_wandb: wandb.finish()
-        if renderer: renderer.close()
         agent.env.close()
     agent.env = env_before_wrappers
 

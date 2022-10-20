@@ -1,7 +1,7 @@
 from .sac import SacAgent # DIAYN inherits from SAC.
 from ._default_hyperparameters import default_hyperparameters
 from ..common.networks import SequentialNetwork
-from ..common.utils import col_concat, one_hot
+from ..common.utils import col_concat, one_hot, from_numpy
 
 import numpy as np
 import torch
@@ -59,7 +59,7 @@ class DiaynAgent(SacAgent):
         if skill is None: skill = self.skill
         z = one_hot(skill, self.P["num_skills"], self.device)
         pseudo_reward = self._pseudo_reward(
-            col_concat(state, torch.tensor(action, device=self.device).unsqueeze(0))
+            col_concat(state, from_numpy(action, device=self.device))
             if self.P["include_actions"] else state, skill)
         self.ep_pseudo_return += pseudo_reward
         SacAgent.per_timestep(self, col_concat(state, z), action, pseudo_reward, col_concat(next_state, z), done)

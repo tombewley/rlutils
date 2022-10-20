@@ -1,6 +1,7 @@
 from .sac import SacAgent # MBPO inherits from SAC.
 from ._default_hyperparameters import default_hyperparameters
 from ..common.dynamics import DynamicsModel
+from ..common.utils import from_numpy
 
 import torch
 from numpy import mean
@@ -39,8 +40,7 @@ class MbpoAgent(SacAgent):
             if self.random_mode: action = self.env.action_space.sample()
             else: action, extra = SacAgent.act(self, state, explore, do_extra)
             if do_extra: 
-                action_torch = torch.tensor(action, device=self.device).unsqueeze(0)
-                extra["next_state_pred"] = self.model.predict(state, action_torch)[0].cpu().numpy()
+                extra["next_state_pred"] = self.model.predict(state, from_numpy(action, device=self.device))[0].cpu().numpy()
             return action, extra
 
     def update_on_batch(self):

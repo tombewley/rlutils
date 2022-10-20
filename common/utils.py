@@ -1,6 +1,10 @@
 import torch
 
 
+def from_numpy(array, device, dtype=torch.float):
+    """Convert a NumPy array to a tensor with specified device and dtype, and unsqueeze."""
+    return torch.tensor(array, device=device, dtype=dtype).unsqueeze(0)
+
 def col_concat(x, y):
     """Concatenate x and y along the final (column) dimension."""
     return torch.cat([x, y], dim=-1)

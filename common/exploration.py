@@ -1,8 +1,8 @@
+from .utils import reparameterise, from_numpy
+
 import numpy as np
 import torch
 import torch.nn.functional as F 
-
-from .utils import reparameterise
 
 
 def squashed_gaussian(pi): 
@@ -88,7 +88,7 @@ class UniformNoise:
         self.device       = device
 
     def __call__(self, action):
-        action_rand = torch.tensor(self.action_space.sample(), device=self.device).unsqueeze(0)
+        action_rand = from_numpy(self.action_space.sample(), device=self.device)
         return (action * (1-self.sigma)) + (action_rand * self.sigma)    
 
     def decay(self, k):
