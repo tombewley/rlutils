@@ -20,6 +20,7 @@ class PetsAgent(Agent):
     def __init__(self, env, hyperparameters):
         assert "reward" in hyperparameters, f"{type(self).__name__} requires a reward function."
         Agent.__init__(self, env, hyperparameters)
+        self.rng = torch.Generator(device=self.device)
         # Create dynamics model, optionally loading a pretrained ensemble of nets.
         if "pretrained_model" in self.P: nets, code, ensemble_size, probabilistic = self.P["pretrained_model"], None, None, None
         else: nets, code, ensemble_size, probabilistic = None, self.P["net_model"], self.P["ensemble_size"], self.P["probabilistic"]
@@ -35,15 +36,19 @@ class PetsAgent(Agent):
         if self.random_mode: self.random_memory = ReplayMemory(self.P["num_random_steps"])
         self.memory = ReplayMemory(self.P["replay_capacity"])
         self.batch_split = (round(self.P["batch_size"] * self.P["batch_ratio"]), round(self.P["batch_size"] * (1-self.P["batch_ratio"])))
+        # Initialise action prior using action space bounds.
+        self.reset_action_prior()
         # Tracking variables.
         self.total_t = 0
         self.ep_action_stds, self.ep_losses = [], []
-        self.warm_start_mean = None
 
     def seed(self, seed):
         self.model.seed(seed)
-        self.rng = torch.Generator(device=self.device)
         self.rng.manual_seed(seed)
+
+    def reset_action_prior(self):
+        self.action_prior_mean = self.act_b[None,None].tile((self.model.horizon,1,1))
+        self.action_prior_std  = self.act_k[None,None].tile((self.model.horizon,1,1))
 
     def act(self, state, explore=True, do_extra=False):
         """Either random or model-based action selection."""
@@ -54,15 +59,13 @@ class PetsAgent(Agent):
                 # CEM: use model and reward function to generate and evaluate action sequences sampled from a truncated normal.
                 # After each iteration, refine the parameters of the truncated normal based on a subset of elites and resample.
                 action_dim = self.env.action_space.shape[0]
-                mean    = torch.empty((self.P["cem_iterations"], self.model.horizon, 1, action_dim), device=self.device)
-                std     = torch.empty((self.P["cem_iterations"], self.model.horizon, 1, action_dim), device=self.device)
-                # Initialise distribution using action space bounds, optionally warm-starting with shifted previous mean for t+1 onwards.
-                mean[0,:-1] = self.warm_start_mean if self.warm_start_mean is not None else self.act_b
-                mean[0,-1] = self.act_b # If warm-starting, still need to handle final action.
-                std[0] = self.act_k
+                mean    = torch.empty((self.P["cem_iterations"],                          self.model.horizon, 1, action_dim), device=self.device)
+                std     = torch.empty((self.P["cem_iterations"],                          self.model.horizon, 1, action_dim), device=self.device)
                 actions = torch.empty((self.P["cem_iterations"], self.P["cem_particles"], self.model.horizon, 1, action_dim), device=self.device)
                 returns = torch.zeros((self.P["cem_iterations"], self.P["cem_particles"]                                   ), device=self.device)
                 gamma_range = torch.tensor([self.P["gamma"]**t for t in range(self.model.horizon)], device=self.device).reshape(1,-1,1)
+                # Adopt current prior for the first iteration.
+                mean[0], std[0] = self.action_prior_mean, self.action_prior_std
                 if do_extra: states = []
                 for i in range(self.P["cem_iterations"]):
                     if i > 0:
@@ -77,6 +80,8 @@ class PetsAgent(Agent):
                         std[i] = (1 - self.P["cem_alpha"]) * std[i-1] + self.P["cem_alpha"] * std_elite
                     # Sample action sequences from truncated normal parameterised by mean/std and action space bounds.
                     actions[i] = truncated_normal(actions[i], mean=mean[i], std=std[i], a=self.action_space_low, b=self.action_space_high, rng=self.rng)
+                    # The above will put NaN values anywhere that std[i] == 0. In these cases, overwrite with mean[i].
+                    zero_std = std[i] == 0; actions[i,:,zero_std] = mean[i,zero_std]
                     if i == 0 and self.P["cem_initial_inertia"]:
                         # Optionally use inertia to smooth actions on first iteration; may aid exploration in some envs.
                         k = self.P["cem_initial_inertia"]
@@ -91,8 +96,8 @@ class PetsAgent(Agent):
                 action = actions[-1,elites[0],0].squeeze(0)
                 action = action.cpu().numpy() if self.continuous_actions else action.item()
                 self.ep_action_stds.append((std[-1,0] / self.act_k).mean().item())
-                # Optionally store mean for t+1 onwards to use in warm-starting.
-                if self.P["cem_warm_start"]: self.warm_start_mean = mean[-1,1:] # NOTE: Or actions[-1,elites[0],1]?
+                # Optionally adopt time-shifted mean action for t+1 onwards to use as a warm-start prior for the next timestep.
+                if self.P["cem_warm_start"]: self.action_prior_mean[:-1] = mean[-1,1:]
                 if do_extra:
                     extra["mean"], extra["std"], extra["states"], extra["actions"] = \
                     mean.squeeze(), std.squeeze(), torch.stack(states).squeeze(), actions.squeeze()
@@ -131,7 +136,7 @@ class PetsAgent(Agent):
         logs = {"model_loss": mean(self.ep_losses) if self.ep_losses else 0., "random_mode": int(self.random_mode),
                 "next_action_std": mean(self.ep_action_stds) if self.ep_action_stds else 0.}
         del self.ep_action_stds[:], self.ep_losses[:]
-        self.warm_start_mean = None
+        self.reset_action_prior()
         return logs
 
     def save(self, path, clear_memory=True):
