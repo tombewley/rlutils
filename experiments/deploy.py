@@ -2,11 +2,12 @@ from .. import from_numpy
 from ..observers.loggers import SumLogger
 from ..agents.stable_baselines import StableBaselinesAgent
 
+from time import strftime
 from tqdm import tqdm
 from gym import wrappers
 
 
-P_DEFAULT = {"num_episodes": int(1e6), "render_freq": 1}
+P_DEFAULT = {"num_steps": 1}
 
 
 def train(agent, P=P_DEFAULT, wandb_config=None, save_dir="agents"):
@@ -31,25 +32,27 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
             wandb_config["id"] = run_id = wandb.util.generate_id()
             wandb_config["resume"] = "never"
         else: wandb_config["resume"] = "must"
+        if "run_name" in P: wandb_config["name"] = "run_name" # Manually set run name.
         run = wandb.init(**wandb_config,
             config={**agent.P, **P, **{n: o.P for n, o in P["observers"].items()}})
-        run_name = run.name
+        if "run_name" not in P: P["run_name"] = run.name
     else:
-        import time; run_id, run_name = None, time.strftime("%Y-%m-%d_%H-%M-%S")
+        run_id = None
+        if "run_name" not in P: P["run_name"] = strftime("%Y-%m-%d_%H-%M-%S") # Fall back to timestamp.
 
     # Add observer for logging per-episode returns.
     P["observers"]["return_logger"] = SumLogger({"name": "return"})
 
     # Create directory for saving and tell observers what the run name is.
-    if do_checkpoints: import os; save_dir += f"/{run_name}"; os.makedirs(save_dir, exist_ok=True) 
-    for o in P["observers"].values(): o.run_names.append(run_name)
+    if do_checkpoints: import os; save_dir += f"/{P['run_name']}"; os.makedirs(save_dir, exist_ok=True)
+    for o in P["observers"].values(): o.run_names.append(P["run_name"])
 
     # Add temporary wrappers to environment. NOTE: These are discarded when deployment is complete.
     env_inside_wrappers = agent.env
     if "episode_time_limit" in P: # Time limit.
         agent.env = wrappers.TimeLimit(agent.env, P["episode_time_limit"])
     if "video_freq" in P and P["video_freq"] > 0: # Video recording. NOTE: This must be the outermost wrapper.
-        agent.env = wrappers.Monitor(agent.env, f"./video/{run_name}", video_callable=lambda ep: ep % P["video_freq"] == 0, force=True)
+        agent.env = wrappers.Monitor(agent.env, f"./video/{P['run_name']}", video_callable=lambda ep: ep % P["video_freq"] == 0, force=True)
 
     # Stable Baselines uses its own training and saving procedures.
     if train and type(agent)==StableBaselinesAgent: agent.train(P["sb_parameters"])
@@ -113,4 +116,4 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
         agent.env.close()
     agent.env = env_inside_wrappers
 
-    return run_id, run_name # Return run ID and name for reference.
+    return run_id, P["run_name"] # Return run ID and name for reference.
