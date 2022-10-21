@@ -1,7 +1,7 @@
 from ._generic import Agent
 from ..common.memory import ReplayMemory
 from ..common.dynamics import DynamicsModel
-from ..common.utils import truncated_normal
+from ..common.utils import truncated_normal, from_numpy
 
 import torch
 from numpy import mean
@@ -49,6 +49,11 @@ class PetsAgent(Agent):
     def reset_action_prior(self):
         self.action_prior_mean = self.act_b[None,None].tile((self.model.horizon,1,1))
         self.action_prior_std  = self.act_k[None,None].tile((self.model.horizon,1,1))
+
+    def force_action(self, t, action):
+        assert action in self.env.action_space
+        self.action_prior_mean[t] = from_numpy(action, device=self.device)
+        self.action_prior_std[t] = 0
 
     def act(self, state, explore=True, do_extra=False):
         """Either random or model-based action selection."""
