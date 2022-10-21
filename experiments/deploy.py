@@ -63,7 +63,7 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
         force_break = False
 
         # Iterate through episodes.
-        state = agent.env.reset()
+        state = P["current_state"] if "current_state" in P else agent.env.reset() # If current state specified, don't reset.
         for ep in tqdm(range(P["num_episodes"]) if not by_steps else iter(int, 1), disable=by_steps, unit="episode"):
             render_this_ep = do_render and (ep+1) % P["render_freq"] == 0
             if render_this_ep: agent.env.render()
