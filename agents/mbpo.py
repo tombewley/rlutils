@@ -16,7 +16,7 @@ class MbpoAgent(SacAgent):
         Advances in Neural Information Processing Systems 32 (2019).
     """
     def __init__(self, env, hyperparameters):
-        assert "reward" in hyperparameters, f"{type(self).__name__} requires a reward function."
+        assert "reward_function" in hyperparameters, f"{type(self).__name__} requires a reward function."
         # Overwrite default hyperparameters for SAC.
         P = default_hyperparameters["sac"]
         for k, v in default_hyperparameters["mbpo"].items(): P[k] = v
@@ -25,7 +25,7 @@ class MbpoAgent(SacAgent):
         # Create dynamics model.
         self.P["rollout"]["num_particles"] = 1
         self.model = DynamicsModel(code=self.P["net_model"], observation_space=self.env.observation_space, action_space=self.env.action_space,
-                                   reward_function=self.P["reward"], probabilistic=self.P["probabilistic"], lr=self.P["lr_model"],
+                                   reward_function=self.P["reward_function"], probabilistic=self.P["probabilistic"], lr=self.P["lr_model"],
                                    ensemble_size=self.P["ensemble_size"], rollout_params=self.P["rollout"], device=self.device)
         # Create rollout memory, which behaves similarly to common.ReplayMemory but with a capacity that varies based on model.horizon.
         self.rollouts = RolloutMemory(self.P["retained_updates"])

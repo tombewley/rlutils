@@ -18,15 +18,16 @@ class PetsAgent(Agent):
         "Neural Network Dynamics for Model-Based Deep Reinforcement Learning with Model-Free Fine-Tuning"
     """
     def __init__(self, env, hyperparameters):
-        assert "reward" in hyperparameters, f"{type(self).__name__} requires a reward function."
+        assert "reward_function" in hyperparameters, f"{type(self).__name__} requires a reward function."
         Agent.__init__(self, env, hyperparameters)
         self.rng = torch.Generator(device=self.device)
         # Create dynamics model, optionally loading a pretrained ensemble of nets.
         if "pretrained_model" in self.P: nets, code, ensemble_size, probabilistic = self.P["pretrained_model"], None, None, None
         else: nets, code, ensemble_size, probabilistic = None, self.P["net_model"], self.P["ensemble_size"], self.P["probabilistic"]
-        term_func = self.P["termination"] if "termination" in self.P else None
+        if "termination_function" in self.P: term_func = self.P["termination_function"]; assert "cost_function" not in self.P, "Incompatible!"
+        else:                                term_func = None
         self.model = DynamicsModel(nets=nets, code=code, observation_space=self.env.observation_space, action_space=self.env.action_space,
-                                   reward_function=self.P["reward"], termination_function=term_func, probabilistic=probabilistic,
+                                   reward_function=self.P["reward_function"], termination_function=term_func, probabilistic=probabilistic,
                                    lr=self.P["lr_model"], ensemble_size=ensemble_size, rollout_params=self.P["rollout"], device=self.device)
         # Action space bounds, needed for CEM.
         self.action_space_low = torch.tensor(self.env.action_space.low, device=self.device)
@@ -78,7 +79,9 @@ class PetsAgent(Agent):
                         # as in Model Predictive Path Integral (MPPI) control.
                         # See "Temporal Difference Learning for Model Predictive Control", Section 3.
                         elite_weights = torch.exp(self.P["cem_temperature"] * (returns[i-1,elites] - returns[i-1,elites[0]]))
+                        elite_weights[returns[i-1,elites].isneginf()] = 0. # It's okay for some returns to be -inf due to constraints...
                         elite_weights_sum = elite_weights.sum()
+                        assert elite_weights_sum > 0                       # ...but they can't all be!
                         mean_elite = torch.tensordot(actions[i-1,elites], elite_weights, ([0],[0])) / elite_weights_sum
                         std_elite = torch.sqrt(torch.tensordot((actions[i-1,elites] - mean_elite)**2, elite_weights, ([0],[0])) / elite_weights_sum)
                         mean[i] = (1 - self.P["cem_alpha"]) * mean[i-1] + self.P["cem_alpha"] * mean_elite
@@ -92,9 +95,12 @@ class PetsAgent(Agent):
                         k = self.P["cem_initial_inertia"]
                         for t in range(1, actions[i].shape[1]):
                             actions[i,:,t] = k * actions[i,:,t-1] + (1 - k) * actions[i,:,t]
-                    # Propagate action sequences through the model.
+                    # Propagate action sequences through the model and compute returns.
                     s, _, rewards = self.model.rollout(state, actions=actions[i], ensemble_index="ts1_a")
                     returns[i] = (gamma_range * rewards).sum(axis=1).squeeze()
+                    # If a cost function is provided in addition to a reward function, add costs to returns.
+                    # NOTE: the cost function does not need to be Markovian.
+                    if "cost_function" in self.P: returns[i] += self.P["cost_function"](s[:,:-1], actions[i], s[:,1:])
                     elites = returns[i].topk(self.P["cem_elites"]).indices
                     if do_extra: states.append(s)
                 # Take first action from best elite.

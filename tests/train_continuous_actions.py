@@ -76,7 +76,7 @@ agent_parameters["diayn"] = {
 }
 agent_parameters["pets"] = {
     "input_normaliser":     "box_bounds",
-    "reward":               reward_function,
+    "reward_function":      reward_function,
     "ensemble_size":        5,
     "probabilistic":        False,
     "model_freq":           1,
@@ -86,7 +86,7 @@ agent_parameters["pets"] = {
 }
 agent_parameters["steve"] = {**agent_parameters["td3"], **{
     "input_normaliser":     "box_bounds",
-    "reward":               reward_function,
+    "reward_function":      reward_function,
     "ensemble_size":        2,
     "num_random_steps":     0,
     "batch_size":           32,
@@ -96,7 +96,7 @@ agent_parameters["steve"] = {**agent_parameters["td3"], **{
 }}
 agent_parameters["mbpo"] = {**agent_parameters["sac"], **{
     "input_normaliser":     "box_bounds",
-    "reward":               reward_function,
+    "reward_function":      reward_function,
     "probabilistic":        False,
     "num_random_steps":     0,
     "model_freq":           1,
