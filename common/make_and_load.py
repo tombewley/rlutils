@@ -1,7 +1,8 @@
-from ..agents._default_hyperparameters import default_hyperparameters
-
 from torch import device, load as torch_load
 from torch.cuda import is_available
+
+from ..common.utils import get_device
+from ..agents._default_hyperparameters import default_hyperparameters
 
 
 def make(agent, env, hyperparameters=dict()):
@@ -33,7 +34,7 @@ def make(agent, env, hyperparameters=dict()):
     return agent_class(env, P)
 
 def load(path, env): 
-    _device = device("cuda" if is_available() else "cpu")
+    _device = get_device()
     agent = torch_load(path, map_location=_device)
     agent.device = _device
     agent.env = env

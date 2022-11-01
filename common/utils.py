@@ -1,6 +1,10 @@
 import torch
 
 
+def get_device():
+    # TODO: Enable mps when no longer just in nightly build
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu") # ("mps" if torch.has_mps else "cpu"))
+
 def from_numpy(array, device, dtype=torch.float):
     """Convert a NumPy array to a tensor with specified device and dtype, and unsqueeze."""
     return torch.tensor(array, device=device, dtype=dtype).unsqueeze(0)

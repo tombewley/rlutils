@@ -4,7 +4,7 @@ from ..agents.stable_baselines import StableBaselinesAgent
 
 from time import strftime
 from tqdm import tqdm
-from gym import wrappers
+from gymnasium import wrappers
 
 
 P_DEFAULT = {"num_steps": 1}
@@ -63,7 +63,7 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
         force_break = False
 
         # Iterate through episodes.
-        state = P["current_state"] if "current_state" in P else agent.env.reset() # If current state specified, don't reset.
+        state = P["current_state"] if "current_state" in P else agent.env.reset()[0] # If current state specified, don't reset.
         for ep in tqdm(range(P["num_episodes"]) if not by_steps else iter(int, 1), disable=by_steps, unit="episode"):
             render_this_ep = do_render and (ep+1) % P["render_freq"] == 0
             if render_this_ep: agent.env.render()
@@ -77,7 +77,8 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
                 
                 # Get action and advance state.
                 action, extra = agent.act(state_torch, explore=train, do_extra=do_extra) # If not in training mode, turn exploration off.
-                next_state, reward, done, info = agent.env.step(action)
+                next_state, reward, terminated, truncated, info = agent.env.step(action)
+                done = terminated or truncated  # NOTE: treat termination and truncation identically, as in old gym.
                 next_state_torch = from_numpy(next_state, device=agent.device)
                 
                 # Perform some agent-specific operations on each timestep if training.

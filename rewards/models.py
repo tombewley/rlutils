@@ -1,15 +1,15 @@
-from ..common.featuriser import Featuriser
-from ..common.networks import SequentialNetwork
-from ..common.utils import reparameterise
-from .evaluate import bt_loss_inner
-
 import torch
 import numpy as np
 import numba
 from scipy.stats import norm as norm_s
 from tqdm import tqdm
-from gym.spaces.space import Space
+from gymnasium.spaces.space import Space
 import hyperrectangles as hr
+
+from ..common.utils import get_device, reparameterise
+from ..common.featuriser import Featuriser
+from ..common.networks import SequentialNetwork
+from .evaluate import bt_loss_inner
 
 
 norm = torch.distributions.Normal(0, 1)
@@ -22,7 +22,7 @@ bce_loss = torch.nn.BCELoss()
 class RewardModel:
     P = {}
     def __init__(self, P):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = get_device()
         self.P.update(P)
         self.featuriser = Featuriser(self.P["featuriser"])
         self.seed()
@@ -526,7 +526,7 @@ class RewardTree(RewardModel):
         Normalise return to be have a common valence on the training set, with unit standard deviation.
         """
         # Initialise with samples from standard normal
-        pt_rng = torch.Generator(device=self.device)
+        pt_rng = torch.Generator(device="cpu" if self.device==torch.device("mps") else self.device) # NOTE: Currently needs CPU fallback
         if self.pt_rng_seed is not None: pt_rng.manual_seed(self.pt_rng_seed)
         g = torch.normal(torch.zeros(A.shape[1], device=self.device), torch.ones(A.shape[1], device=self.device), generator=pt_rng)
         g.requires_grad = True

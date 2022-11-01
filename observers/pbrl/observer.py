@@ -1,12 +1,13 @@
+import os
+from torch import save as pt_save, load as pt_load, device, cuda
+from numpy import mean
+
+from ...common.utils import get_device
 from ...rewards.graph import PreferenceGraph
 from ...rewards.sampler import Sampler
 from ...rewards.interactions import preference_batch
 from ...rewards.evaluate import preference_loss, epic, rank_correlation
 from .explainer import Explainer
-
-import os
-from torch import save as pt_save, load as pt_load, device, cuda
-from numpy import mean
 
 
 class PbrlObserver:
@@ -145,7 +146,7 @@ def load(graph_fname=None, model_fname=None, P=None):
     """
     Make an instance of PbrlObserver from the information stored by the .save() method.
     """
-    device_ = device("cuda" if cuda.is_available() else "cpu")
+    device_ = get_device()
     pbrl = PbrlObserver(P)
     if graph_fname is not None:
         pbrl.graph = pt_load(graph_fname, device_)

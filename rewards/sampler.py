@@ -2,18 +2,20 @@ import torch
 from numpy import unravel_index
 from numpy.random import default_rng
 
+from ..common.utils import get_device
+
 
 norm = torch.distributions.Normal(0, 1)
 
 
 class Sampler:
     def __init__(self, graph, model, P):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = get_device()
         self.graph, self.model, self.P = graph, model, P
         self.seed()
 
     def seed(self, seed=None):
-        self.pt_rng = torch.Generator(device=self.device)
+        self.pt_rng = torch.Generator(device="cpu" if self.device==torch.device("mps") else self.device) # NOTE: Currently needs CPU fallback
         if seed is not None: self.pt_rng.manual_seed(seed)
         self.np_rng = default_rng(seed)
 

@@ -3,7 +3,7 @@ from .utils import col_concat, reparameterise
 
 import torch
 from random import seed as random_seed, choice
-from gym.spaces.box import Box
+from gymnasium.spaces.box import Box
 
 
 """

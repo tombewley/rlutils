@@ -1,6 +1,8 @@
 import torch
-from gym.spaces.discrete import Discrete
-from gym.spaces.box import Box
+from gymnasium.spaces.discrete import Discrete
+from gymnasium.spaces.box import Box
+
+from ..common.utils import get_device
 
 
 class Agent:
@@ -8,7 +10,7 @@ class Agent:
     Base agent class. All other agents inherit from this.
     """
     def __init__(self, env, hyperparameters):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = get_device()
         self.env = env
         self.P = hyperparameters 
         if type(self.env.action_space) == Box: 

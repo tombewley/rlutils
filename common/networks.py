@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from gym.spaces.space import Space
-from gym.spaces.box import Box
+from gymnasium.spaces.space import Space
+from gymnasium.spaces.box import Box
 from numpy import finfo, float32
 
 

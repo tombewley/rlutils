@@ -4,13 +4,15 @@ from numpy.random import default_rng
 from torch import tensor, float32, isnan, zeros, split, stack, hstack, vstack, no_grad, device, cuda
 import matplotlib.pyplot as plt
 
+from ..common.utils import get_device
+
 
 class PreferenceGraph:
     """
     Class for storing a preference dataset.
     """
     def __init__(self):
-        self.device = device("cuda" if cuda.is_available() else "cpu")
+        self.device = get_device()
         self._graph = nx.DiGraph()
         self.seed()
 

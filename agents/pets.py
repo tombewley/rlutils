@@ -4,7 +4,7 @@ from ..common.dynamics import DynamicsModel
 from ..common.utils import truncated_normal, from_numpy
 
 import torch
-from numpy import mean
+from numpy import array, float32, mean
 
 
 class PetsAgent(Agent):
@@ -52,7 +52,7 @@ class PetsAgent(Agent):
         self.action_prior_std  = self.act_k[None,None].tile((self.model.horizon,1,1))
 
     def force_action(self, t, action):
-        assert action in self.env.action_space
+        assert array(action, dtype=float32) in self.env.action_space
         self.action_prior_mean[t] = from_numpy(action, device=self.device)
         self.action_prior_std[t] = 0
 
