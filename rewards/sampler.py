@@ -15,7 +15,7 @@ class Sampler:
         self.seed()
 
     def seed(self, seed=None):
-        self.pt_rng = torch.Generator(device="cpu" if self.device==torch.device("mps") else self.device) # NOTE: Currently needs CPU fallback
+        self.pt_rng = torch.Generator(device=self.device)
         if seed is not None: self.pt_rng.manual_seed(seed)
         self.np_rng = default_rng(seed)
 
