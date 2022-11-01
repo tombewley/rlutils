@@ -526,7 +526,7 @@ class RewardTree(RewardModel):
         Normalise return to be have a common valence on the training set, with unit standard deviation.
         """
         # Initialise with samples from standard normal
-        pt_rng = torch.Generator(device="cpu" if self.device==torch.device("mps") else self.device) # NOTE: Currently needs CPU fallback
+        pt_rng = torch.Generator(device=self.device)
         if self.pt_rng_seed is not None: pt_rng.manual_seed(self.pt_rng_seed)
         g = torch.normal(torch.zeros(A.shape[1], device=self.device), torch.ones(A.shape[1], device=self.device), generator=pt_rng)
         g.requires_grad = True
