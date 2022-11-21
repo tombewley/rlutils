@@ -1,4 +1,4 @@
-import gym
+import gymnasium as gym
 
 
 class NormaliseActionWrapper(gym.ActionWrapper):
@@ -48,15 +48,15 @@ class CustomRewardWrapper(gym.Wrapper):
 
 class DoneWipeWrapper(gym.Wrapper): 
     """
-    Forces done = False.
+    Forces terminated = truncated = False.
     """
     def __init__(self, env): 
         self.env = env
         super().__init__(env)
     
     def step(self, action): 
-        next_state, reward, _, info = self.env.step(action)
-        return next_state, reward, False, info
+        next_state, reward, _, _, info = self.env.step(action)
+        return next_state, reward, False, False, info
 
 
 class MetaFeatureWrapper(gym.Wrapper):
