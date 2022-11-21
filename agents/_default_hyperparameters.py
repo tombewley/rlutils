@@ -139,7 +139,9 @@ default_hyperparameters = {
     "lr_pi": 1e-4, # Learning rate for policy.
     "lr_Q": 1e-3, # Learning rate for state-action value function.
     "gamma": 0.99, # Discount factor.
-    "alpha": 0.2, # Weighting for entropy regularisation term.
+    "init_alpha": 0.1, # Initial weighting for entropy regularisation term.
+    "learnable_alpha": True, # Whether to automatically tune alpha.
+    "lr_alpha": 1e-4, # Learning rate for automatic alpha tuning.
     "tau": 0.005, # Parameter for Polyak averaging of target network parameters.
     "update_freq": 1, # Number of timesteps between updates.
   },

@@ -34,12 +34,19 @@ class SacAgent(Agent):
                                          normaliser=self.P["input_normaliser"], eval_only=True, device=self.device)
             Q_target.load_state_dict(Q.state_dict()) # Clone.
             self.Q.append(Q); self.Q_target.append(Q_target)
+        # Initialise entropy weighting parameter.
+        self.log_alpha = torch.tensor(np.log(self.P["init_alpha"]), device=self.device)
+        if self.P["learnable_alpha"]:
+            self.log_alpha.requires_grad = True
+            self.log_alpha_optimiser = torch.optim.Adam([self.log_alpha], lr=self.P["lr_alpha"])
+            # Set desired minimum expected entropy to -|A| as recommended in paper.
+            self.target_entropy = -self.env.action_space.shape[0]
         self.start()
 
     def start(self):
         # Create replay memory.
         self.memory = ReplayMemory(self.P["replay_capacity"])
-        # Tracking variables.   
+        # Tracking variables.
         self.total_t = 0 # Used for update_freq.
         self.ep_log_probs, self.ep_losses = [], []  
     
@@ -61,7 +68,8 @@ class SacAgent(Agent):
         next_Q_values = torch.zeros(states.shape[0], device=self.device)
         next_Q_values[nonterminal_mask] = torch.min(*(Q_target(col_concat(nonterminal_next_states, nonterminal_next_actions)) for Q_target in self.Q_target)).squeeze()       
         # Subtract entropy term, creating soft Q values.
-        next_Q_values[nonterminal_mask] -= self.P["alpha"] * nonterminal_next_log_probs
+        alpha = self.log_alpha.exp().detach()
+        next_Q_values[nonterminal_mask] -= alpha * nonterminal_next_log_probs
         # Compute target = reward + discounted soft Q_target(s', a').
         Q_targets = (rewards + (self.P["gamma"] * next_Q_values)).detach()
         value_loss_sum = 0.
@@ -74,8 +82,14 @@ class SacAgent(Agent):
         actions_new, log_probs_new = self.pi(states)
         Q_values_new = torch.min(*(Q(col_concat(states, actions_new)) for Q in self.Q))
         # Update policy in the direction of increasing value according to self.Q (the policy gradient), plus entropy regularisation.
-        policy_loss = ((self.P["alpha"] * log_probs_new) - Q_values_new).mean()
+        policy_loss = ((alpha * log_probs_new) - Q_values_new).mean()
         self._pi.optimise(policy_loss)
+        if self.P["learnable_alpha"]:
+            # Update alpha
+            self.log_alpha_optimiser.zero_grad()
+            alpha_loss = (self.log_alpha.exp() * (-log_probs_new - self.target_entropy).detach()).mean()
+            alpha_loss.backward()
+            self.log_alpha_optimiser.step()
         # Perform soft (Polyak) updates on targets.
         for net, target in zip(self.Q, self.Q_target): target.polyak(net, tau=self.P["tau"])
         return policy_loss.item(), value_loss_sum
