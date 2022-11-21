@@ -32,7 +32,7 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
             wandb_config["id"] = run_id = wandb.util.generate_id()
             wandb_config["resume"] = "never"
         else: wandb_config["resume"] = "must"
-        if "run_name" in P: wandb_config["name"] = "run_name" # Manually set run name.
+        if "run_name" in P: wandb_config["name"] = P["run_name"] # Manually set run name.
         run = wandb.init(**wandb_config,
             config={**agent.P, **P, **{n: o.P for n, o in P["observers"].items()}})
         if "run_name" not in P: P["run_name"] = run.name
@@ -52,7 +52,7 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
     if "episode_time_limit" in P: # Time limit.
         agent.env = wrappers.TimeLimit(agent.env, P["episode_time_limit"])
     if "video_freq" in P and P["video_freq"] > 0: # Video recording. NOTE: This must be the outermost wrapper.
-        agent.env = wrappers.Monitor(agent.env, f"./video/{P['run_name']}", video_callable=lambda ep: ep % P["video_freq"] == 0, force=True)
+        agent.env = wrappers.RecordVideo(agent.env, f"./video/{P['run_name']}", episode_trigger=lambda ep: ep % P["video_freq"] == 0)
 
     # Stable Baselines uses its own training and saving procedures.
     if train and type(agent)==StableBaselinesAgent: agent.train(P["sb_parameters"])
@@ -97,7 +97,7 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
                 if force_break: break
             if force_break: break
 
-            state = agent.env.reset() # PbrlObserver requires env.reset() here due to video save behaviour.
+            state, _ = agent.env.reset() # PbrlObserver requires env.reset() here due to video save behaviour.
 
             # Perform some agent- and observer-specific operations on each episode, which may create logs.
             logs = {}
