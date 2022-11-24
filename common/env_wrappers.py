@@ -82,3 +82,23 @@ class MetaFeatureWrapper(gym.Wrapper):
         self.infos.append(info)
         info_add = self.f(self.states, self.actions, self.rewards, self.infos)
         return next_state, reward, done, {**info, **info_add}
+
+
+class SkipWrapper(gym.Wrapper):
+    """
+    Skips timesteps by repeating actions, and sums rewards.
+    """
+    def __init__(self, env, skip):
+        self.env = env
+        self.skip = skip
+        super().__init__(env)
+
+    def step(self, action):
+        total_reward = 0.
+        for _ in range(self.skip):
+            next_state, reward, terminated, truncated, info = self.env.step(action)
+            total_reward += reward
+            if terminated or truncated:
+                break
+        # NOTE: Only the final info is returned
+        return next_state, total_reward, terminated, truncated, info
