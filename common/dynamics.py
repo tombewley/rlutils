@@ -20,7 +20,8 @@ class DynamicsModel:
     """
     Optionally implements probabilistic dynamics using the reparameterisation trick.
     """
-    def __init__(self, observation_space, action_space, reward_function, termination_function, lr, rollout_params, device, nets=None, code=None, ensemble_size=None, probabilistic=False):
+    def __init__(self, observation_space, action_space, reward_function, termination_function, lr, rollout_params, device,
+                 nets=None, code=None, ensemble_size=None, probabilistic=False, normaliser="box_bounds"):
         self.reward_function = reward_function
         self.termination_function = termination_function
         self.probabilistic = probabilistic
@@ -33,12 +34,17 @@ class DynamicsModel:
         else: # Create new ensemble of nets.
             self.nets = [SequentialNetwork(code=code, input_space=[observation_space, action_space],
                                            output_size=observation_space.shape[0]*(2 if self.probabilistic else 1),
-                                           normaliser="box_bounds", lr=lr, device=device) # NOTE: Using box_bounds normalisation.
+                                           normaliser=normaliser, lr=lr, device=device)
                          for _ in range(ensemble_size)]
         self.horizon = self.P["horizon_params"][1] # Initial planning horizon (NOTE: indexing assumption).
         self.action_dim = action_space.shape[0]
-        # Weight model loss function by bounds of observation space.
-        self.loss_weights = torch.tensor(1. / (observation_space.high - observation_space.low), device=device)
+        if normaliser is None:
+            self.loss_weights = 1.
+        elif normaliser == "box_bounds":
+            # Weight model loss function by bounds of observation space.
+            self.loss_weights = torch.tensor(1. / (observation_space.high - observation_space.low), device=device)
+        else:
+            raise NotImplementedError
         # NOTE: Currently MBRL-Lib says fixed bounds "work better" than learnt ones. Using values from there (note std instead of var).
         if self.probabilistic: self.log_std_clamp = ("hard", -20, 2) # ("soft", -20, 2)
         # Tracking variables.

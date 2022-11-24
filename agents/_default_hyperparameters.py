@@ -79,6 +79,8 @@ default_hyperparameters = {
 
   "pets": {
     "net_model": [(None, 32), "R", (32, 64), "R", (64, None)],
+    "input_normaliser": "box_bounds", # NOTE: especially beneficial for dynamics models.
+    "ensemble_size": 5, # Number of dynamics models.
     "probabilistic": True, # Whether or not dynamics models output standard deviations alongside means.
     "num_random_steps": 2000, # Size of random replay memory (disables random mode when full).
     "batch_size": 256,

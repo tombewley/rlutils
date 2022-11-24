@@ -27,7 +27,8 @@ class PetsAgent(Agent):
         if "termination_function" in self.P: term_func = self.P["termination_function"]; assert "cost_function" not in self.P, "Incompatible!"
         else:                                term_func = None
         self.model = DynamicsModel(nets=nets, code=code, observation_space=self.env.observation_space, action_space=self.env.action_space,
-                                   reward_function=self.P["reward_function"], termination_function=term_func, probabilistic=probabilistic,
+                                   reward_function=self.P["reward_function"], termination_function=term_func,
+                                   normaliser=self.P["input_normaliser"], probabilistic=probabilistic,
                                    lr=self.P["lr_model"], ensemble_size=ensemble_size, rollout_params=self.P["rollout"], device=self.device)
         # Action space bounds, needed for CEM.
         self.action_space_low = torch.tensor(self.env.action_space.low, device=self.device)
