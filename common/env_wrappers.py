@@ -86,19 +86,24 @@ class MetaFeatureWrapper(gym.Wrapper):
 
 class SkipWrapper(gym.Wrapper):
     """
-    Skips timesteps by repeating actions, and sums rewards.
+    Skips timesteps by repeating actions, and returns either summed, averaged or final reward.
     """
-    def __init__(self, env, skip):
+    def __init__(self, env, skip, reward_agg="sum"):
         self.env = env
         self.skip = skip
+        self.reward_agg = reward_agg
         super().__init__(env)
 
     def step(self, action):
-        total_reward = 0.
-        for _ in range(self.skip):
+        reward_sum = 0.
+        for t in range(self.skip):
             next_state, reward, terminated, truncated, info = self.env.step(action)
-            total_reward += reward
+            reward_sum += reward
             if terminated or truncated:
                 break
+        if self.reward_agg == "sum":     reward_out = reward_sum
+        elif self.reward_agg == "mean":  reward_out = reward_sum / t
+        elif self.reward_agg == "final": reward_out = reward
+        else: raise Exception(f"Invalid reward_agg={self.reward_agg}")
         # NOTE: Only the final info is returned
-        return next_state, total_reward, terminated, truncated, info
+        return next_state, reward_out, terminated, truncated, info
