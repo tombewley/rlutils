@@ -21,6 +21,7 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
     do_extra = "do_extra" in P and P["do_extra"] # Whether or not to request extra predictions from the agent.
     do_wandb = wandb_config is not None
     do_render = "render_freq" in P and P["render_freq"] > 0
+    do_video = "video_freq" in P and P["video_freq"] > 0
     do_checkpoints = "checkpoint_freq" in P and P["checkpoint_freq"] > 0
     if "observers" not in P: P["observers"] = {}
 
@@ -51,8 +52,8 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
     env_inside_wrappers = agent.env
     if "episode_time_limit" in P: # Time limit.
         agent.env = wrappers.TimeLimit(agent.env, P["episode_time_limit"])
-    if "video_freq" in P and P["video_freq"] > 0: # Video recording. NOTE: This must be the outermost wrapper.
-        agent.env = wrappers.RecordVideo(agent.env, f"./video/{P['run_name']}", episode_trigger=lambda ep: ep % P["video_freq"] == 0)
+    if do_video: # Video recording. NOTE: This must be the outermost wrapper.
+        agent.env = wrappers.RecordVideo(agent.env, f"./video/{P['run_name']}", episode_trigger=lambda ep: (ep+1) % P["video_freq"] == 0)
 
     # Stable Baselines uses its own training and saving procedures.
     if train and type(agent)==StableBaselinesAgent: agent.train(P["sb_parameters"])
@@ -66,6 +67,7 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
         state = P["current_state"] if "current_state" in P else agent.env.reset()[0] # If current state specified, don't reset.
         for ep in tqdm(range(P["num_episodes"]) if not by_steps else iter(int, 1), disable=by_steps, unit="episode"):
             render_this_ep = do_render and (ep+1) % P["render_freq"] == 0
+            video_this_ep = do_video and (ep+1) % P["video_freq"] == 0
             if render_this_ep: agent.env.render()
             
             # Get state in PyTorch format expected by agent.
@@ -74,7 +76,7 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
             # Iterate through timesteps.
             t = 0; done = False
             while not done:
-                
+
                 # Get action and advance state.
                 action, extra = agent.act(state_torch, explore=train, do_extra=do_extra) # If not in training mode, turn exploration off.
                 next_state, reward, terminated, truncated, info = agent.env.step(action)
@@ -106,7 +108,10 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
             for o in P["observers"].values(): logs.update(o.per_episode(ep))
 
             # Send logs to Weights & Biases if applicable.
-            if do_wandb: wandb.log(logs)
+            if do_wandb:
+                if video_this_ep:
+                    logs["video"] = wandb.Video(f"./video/{P['run_name']}/rl-video-episode-{ep}.mp4")
+                wandb.log(logs)
 
             # Periodic save-outs of checkpoints (always save after final episode).
             if do_checkpoints and ((ep+1) == P["num_episodes"] or (ep+1) % P["checkpoint_freq"] == 0):
