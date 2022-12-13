@@ -145,7 +145,9 @@ class PetsAgent(Agent):
 
     def per_episode(self):
         """Operations to perform on each episode end during training."""
-        logs = {"model_loss": mean(self.ep_losses) if self.ep_losses else 0., "random_mode": int(self.random_mode),
+        logs = {"model_loss": mean(self.ep_losses) if self.ep_losses else 0.,
+                "random_mode": int(self.random_mode),
+                "horizon": self.model.horizon,
                 "next_action_std": mean(self.ep_action_stds) if self.ep_action_stds else 0.}
         del self.ep_action_stds[:], self.ep_losses[:]
         self.reset_action_prior()
