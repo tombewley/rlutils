@@ -21,10 +21,11 @@ class DynamicsModel:
     Optionally implements probabilistic dynamics using the reparameterisation trick.
     """
     def __init__(self, observation_space, action_space, reward_function, termination_function, lr, rollout_params, device,
-                 nets=None, code=None, ensemble_size=None, probabilistic=False, normaliser="box_bounds"):
+                 nets=None, code=None, ensemble_size=None, probabilistic=False, delta=True, normaliser="box_bounds"):
         self.reward_function = reward_function
         self.termination_function = termination_function
         self.probabilistic = probabilistic
+        self.delta = delta
         self.P = rollout_params
         assert type(action_space) == Box, "CEM doesn't work with discrete actions, and need one-hot encoding for model"
         if nets is not None: # Load pretrained ensemble of nets.
@@ -60,22 +61,23 @@ class DynamicsModel:
         """
         states_and_actions = col_concat(states, actions)
         if type(ensemble_index) == int: # Use the same ensemble member for all state-action pairs.
-            ds = self.nets[ensemble_index](states_and_actions)
+            pred = self.nets[ensemble_index](states_and_actions)
         elif type(ensemble_index) == list: # Use a specified member for each pair.
             assert len(ensemble_index) == states_and_actions.shape[0]
-            ds = torch.cat([self.nets[ensemble_index[i]](sa).unsqueeze(0) for i, sa in enumerate(states_and_actions)], dim=0)
+            pred = torch.cat([self.nets[ensemble_index[i]](sa).unsqueeze(0) for i, sa in enumerate(states_and_actions)], dim=0)
         elif ensemble_index == "ts1_a": # Uniform-randomly sample a common member to use for all pairs.
-            ds = choice(self.nets)(states_and_actions)
+            pred = choice(self.nets)(states_and_actions)
         elif ensemble_index == "ts1_b": # Uniform-randomly sample a member to use for each pair.
-            ds = torch.cat([choice(self.nets)(sa).unsqueeze(0) for sa in states_and_actions], dim=0)
+            pred = torch.cat([choice(self.nets)(sa).unsqueeze(0) for sa in states_and_actions], dim=0)
         elif ensemble_index == "all": # Use the entire ensemble for all pairs.
             print("TODO: test that this works with self.probabilistic=True")
-            ds = torch.cat([net(states_and_actions).unsqueeze(2) for net in self.nets], dim=2)
+            pred = torch.cat([net(states_and_actions).unsqueeze(2) for net in self.nets], dim=2)
         # If using a probabilistic dynamics model, employ the reparameterisation trick.
         if self.probabilistic: 
-            if params: return reparameterise(ds, clamp=self.log_std_clamp, params=True) # Return mean and log standard deviation.
-            else: ds = reparameterise(ds, clamp=self.log_std_clamp).rsample() 
-        return states + ds
+            if params: return reparameterise(pred, clamp=self.log_std_clamp, params=True) # Return mean and log standard deviation.
+            else: pred = reparameterise(pred, clamp=self.log_std_clamp).rsample()
+        # If using delta parameterisation, network output is interpreted as the *change* in state.
+        return states + pred if self.delta else pred
 
     def rollout(self, states_init, ensemble_index, policy=None, actions=None):
         """

@@ -82,6 +82,7 @@ default_hyperparameters = {
     "input_normaliser": "box_bounds", # NOTE: especially beneficial for dynamics models.
     "ensemble_size": 5, # Number of dynamics models.
     "probabilistic": True, # Whether or not dynamics models output standard deviations alongside means.
+    "delta_dynamics": True, # Whether or not dynamics models output *change* in state (c.f. next state itself).
     "num_random_steps": 2000, # Size of random replay memory (disables random mode when full).
     "batch_size": 256,
     "model_freq": 10, # Number of steps between model updates.
