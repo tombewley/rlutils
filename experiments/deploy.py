@@ -82,7 +82,7 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
                 next_state, reward, terminated, truncated, info = agent.env.step(action)
                 done = terminated or truncated  # NOTE: treat termination and truncation identically, as in old gym.
                 next_state_torch = from_numpy(next_state, device=agent.device)
-                
+
                 # Perform some agent-specific operations on each timestep if training.
                 if train: agent.per_timestep(state_torch, action, reward, next_state_torch, done)
 
