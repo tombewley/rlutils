@@ -7,6 +7,7 @@ from ..common.featuriser import Featuriser
 import torch
 import torch.nn.functional as F
 from torch.distributions.cauchy import Cauchy
+from numpy import mean
 from gymnasium.spaces.box import Box
 
 
@@ -21,7 +22,8 @@ class ForwardBackwardAgent(Agent):
     def __init__(self, env, hyperparameters):
         Agent.__init__(self, env, hyperparameters)
         # Create forward (F) network and its target.
-        one_hot_action_space = Box(shape=(self.env.action_space.n,), low=0., high=1.)
+        n_a = self.env.action_space.n
+        one_hot_action_space = Box(shape=(n_a,), low=0., high=1.)
         embedding_space = Box(shape=(self.P["embed_dim"],), low=-float("inf"), high=float("inf"))
         input_F = [self.env.observation_space, one_hot_action_space, embedding_space]
         self._F        = SequentialNetwork(code=self.P["net_FB"], input_space=input_F,
@@ -35,7 +37,7 @@ class ForwardBackwardAgent(Agent):
         # NOTE: B can use a featurised representation of (s, a, s').
         if "featuriser" in self.P: self.featuriser = self.P["featuriser"]
         else:
-            n_s, n_a = self.env.observation_space.shape[0], self.env.action_space.n
+            n_s = self.env.observation_space.shape[0]
             self.featuriser = Featuriser({"feature_names":
                 [f"s{i}" for i in range(n_s)] + [f"a{i}" for i in range(n_a)] + [f"ns{i}" for i in range(n_s)]})
         input_B = [Box(shape=(len(self.featuriser.names), ), low=-float("inf"), high=float("inf"))]
@@ -52,13 +54,14 @@ class ForwardBackwardAgent(Agent):
         self.memory = ReplayMemory(self.P["replay_capacity"])
         # Initialise epsilon-greedy exploration.
         self.exploration = EpsilonGreedy(self.P["epsilon"], 0, 1) # NOTE: Epsilon doesn't decay.
-        # xxxx
-        self.one_hot = torch.eye(self.env.action_space.n, device=self.device)
+        # Create commonly-reused constants and class instances.
+        self.one_hot = torch.eye(n_a, device=self.device)
+        self.max_policy_entropy = torch.tensor(n_a, device=self.device).log()
         self.cauchy = Cauchy(torch.tensor([0.0], device=self.device), torch.tensor([0.5], device=self.device))
         self.softmax = torch.nn.Softmax(dim=1)
         # Tracking variables.
         self.z = self._sample_z()  # Initialise preference vector.
-        self.ep_losses = []
+        self.ep_metrics = []
 
     def act(self, state, explore=True, do_extra=False):
         """Epsilon-greedy action selection."""
@@ -83,9 +86,8 @@ class ForwardBackwardAgent(Agent):
         # Use target networks to compute M(s', a', s_f, a_f, s'_f, z) for all pairwise combinations.
         # Rather than taking the greedy a', use a weighted average over a softmax policy.
         next_action_probs = self.softmax(self.Q(next_states, z, target=True) / self.P["softmax_tau"]).detach()
-
-        # TODO: MONITOR entropy of next_action_probs
-
+        # For monitoring, compute mean entropy of next_action_probs relative to the maximum possible.
+        next_action_entropy = -(next_action_probs * next_action_probs.log()).sum(dim=1).mean() / self.max_policy_entropy
         next_M_values = torch.zeros_like(M_values)
         for i, p_a in enumerate(next_action_probs.T):
             next_actions = torch.full(fill_value=i, size=(b,), device=self.device, dtype=torch.int64)
@@ -106,20 +108,20 @@ class ForwardBackwardAgent(Agent):
         self.optimiser.step()
         # Perform soft (Polyak) updates on targets.
         for net, target in ((self._F, self._F_target), (self._B, self._B_target)): target.polyak(net, tau=self.P["tau"])
-        return td_loss.item(), reg_loss.item()
+        return td_loss.item(), reg_loss.item(), next_action_entropy.item()
 
     def per_timestep(self, state, action, reward, next_state, done):
         """Operations to perform on each timestep during training."""
         self.memory.add(state, action, reward, next_state, done)
-        losses = self.update_on_batch()
-        if losses: self.ep_losses.append(losses)
+        metrics = self.update_on_batch()
+        if metrics: self.ep_metrics.append(metrics)
 
     def per_episode(self):
         """Operations to perform on each episode end during training."""
-        mean_td_loss, mean_reg_loss = np.mean(self.ep_losses, axis=0) if self.ep_losses else (0., 0.)
-        del self.ep_losses[:]
+        mean_td_loss, mean_reg_loss, mean_entropy = mean(self.ep_metrics, axis=0) if self.ep_metrics else (0., 0., 0.)
+        del self.ep_metrics[:]
         self.z = self._sample_z()  # Resample preference vector for the next episode.
-        return {"td_loss": mean_td_loss, "reg_loss": mean_reg_loss}
+        return {"td_loss": mean_td_loss, "reg_loss": mean_reg_loss, "next_action_entropy": mean_entropy}
 
     def Q(self, states, z, target=False):
         """Predict state-action value Q(s, a) = F(s, a, z)ᵀz."""
