@@ -56,6 +56,20 @@ default_hyperparameters = {
     "reward_components": None # For reward decomposition (set to None to disable).
   },
 
+  "fb": {
+    "net_FB": [(None, 256), "R", (256, 256), "R", (256, 256), "R", (256, None)],
+    "input_normaliser": None,  # Set to "box_bounds" to pre-normalise network inputs.
+    "embed_dim": 100,  # Dimensionality of embedding space.
+    "replay_capacity": int(1e6),  # Size of replay memory (starts overwriting when full).
+    "batch_size": 128,  # Size of batches to sample from replay memory during learning.
+    "lr_FB": 5e-4,  # Learning rate for F and B networks.
+    "gamma": 0.99,  # Discount factor.
+    "epsilon": 0.2,  # For behaviour policies.
+    "softmax_tau": 200.,  # For softmax policies used in updates.
+    "tau": 0.005,  # Parameter for Polyak averaging of target network parameters.
+    "lambda": 1.,  # Coefficient for orthonormality regularisation loss.
+  },
+
   "mbpo": {
     "net_model": [(None, 200), "R", (200, 200), "R", (200, 200), "R", (200, 200), "R", (200, None)],
     "ensemble_size": 7, # Number of parallel dynamics models to train.
