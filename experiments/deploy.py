@@ -84,7 +84,7 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
                 next_state_torch = from_numpy(next_state, device=agent.device)
 
                 # Perform some agent-specific operations on each timestep if training.
-                if train: agent.per_timestep(state_torch, action, reward, next_state_torch, done)
+                if train: agent.per_timestep(state_torch, action, reward, next_state_torch, done)  # TODO: Just use terminated?
 
                 # Send all information relating to the current timestep to to the observers.
                 for o in P["observers"].values(): o.per_timestep(ep, t, state, action, next_state, reward, done, info, extra)

@@ -33,11 +33,9 @@ class SequentialNetwork(nn.Module):
             self.clip_grads = clip_grads
         self.to(device)
 
-    def __repr__(self): return "Net"
-
     def forward(self, x): return self.layers(x)
 
-    def optimise(self, loss, do_backward=True, retain_graph=True): 
+    def optimise(self, loss, do_backward=True, retain_graph=True):
         assert self.training, "Network is in eval_only mode."
         if do_backward: 
             self.optimiser.zero_grad()
