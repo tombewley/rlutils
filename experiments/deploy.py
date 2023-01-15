@@ -30,16 +30,14 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
         assert not type(agent)==StableBaselinesAgent, "wandb monitoring not implemented for StableBaselinesAgent."
         import wandb
         if "id" not in wandb_config:
-            wandb_config["id"] = run_id = wandb.util.generate_id()
+            wandb_config["id"] = wandb.util.generate_id()
             wandb_config["resume"] = "never"
         else: wandb_config["resume"] = "must"
         if "run_name" in P: wandb_config["name"] = P["run_name"] # Manually set run name.
         run = wandb.init(**wandb_config,
             config={**agent.P, **P, **{n: o.P for n, o in P["observers"].items()}})
         if "run_name" not in P: P["run_name"] = run.name
-    else:
-        run_id = None
-        if "run_name" not in P: P["run_name"] = strftime("%Y-%m-%d_%H-%M-%S") # Fall back to timestamp.
+    elif "run_name" not in P: P["run_name"] = strftime("%Y-%m-%d_%H-%M-%S") # Fall back to timestamp.
 
     # Add observer for logging per-episode returns.
     P["observers"]["return_logger"] = SumLogger({"name": "return"})
@@ -122,4 +120,4 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
         agent.env.close()
     agent.env = env_inside_wrappers
 
-    return run_id, P["run_name"] # Return run ID and name for reference.
+    return wandb_config["id"] if wandb_config is not None else None, P["run_name"] # Return run ID and name for reference.
