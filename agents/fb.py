@@ -85,15 +85,15 @@ class ForwardBackwardAgent(Agent):
         M_immediate = self.M(states, actions, states, actions, next_states, z)
         # Use target networks to compute M(s', a', s_f, a_f, s'_f, z) for all pairwise combinations.
         # Rather than taking the greedy a', use a weighted average over a softmax policy.
-        next_action_probs = self.softmax(self.Q(next_states, z, target=True) / self.P["softmax_tau"]).detach()
+        next_action_probs = self.softmax(self.Q(next_states, z, target=True) / self.P["softmax_tau"])
         # For monitoring, compute mean entropy of next_action_probs relative to the maximum possible.
-        next_action_entropy = -(next_action_probs * next_action_probs.log()).sum(dim=1).mean() / self.max_policy_entropy
+        next_action_entropy = -(next_action_probs * next_action_probs.log()).nansum(dim=1).mean() / self.max_policy_entropy
         next_M_values = torch.zeros_like(M_values)
         for i, p_a in enumerate(next_action_probs.T):
             next_actions = torch.full(fill_value=i, size=(b,), device=self.device, dtype=torch.int64)
             next_M_values += p_a * self.M_pairwise(next_states, next_actions, states_f, actions_f, next_states_f, z,
-                                                   target=True)
-        # Compute MSE of modified TD error (line 19 of Algorithm 1). TODO: Why is it done this way?
+                                                   target=True).detach()
+        # Compute MSE of modified TD error (line 19 of Algorithm 1).
         td_loss = (F.mse_loss(M_values, self.P["gamma"] * next_M_values) / 2) - M_immediate.mean()
         # Compute orthonormality regularisation loss for B.
         B = self.B(states, actions, next_states)
@@ -102,6 +102,7 @@ class ForwardBackwardAgent(Agent):
         B_f_exp = B_f.unsqueeze(0).expand(b, b, self.P["embed_dim"])
         BT_B_f = (B_exp * B_f_exp.detach()).sum(dim=-1)
         reg_loss = (BT_B_f * BT_B_f.detach()).mean() - (B * B.detach()).sum(dim=-1).mean()
+        # reg_loss = ((B * B.detach()).sum(dim=-1) * BT_B_f.detach()).mean() - BT_B_f.mean()  # NOTE: Used on GitHub.
         # Update both networks.
         self.optimiser.zero_grad()
         (td_loss + self.P["lambda"] * reg_loss).backward()
@@ -143,6 +144,7 @@ class ForwardBackwardAgent(Agent):
 
     def F(self, states, actions, z, target=False):
         """Predict successor features for state-action pairs."""
+        # NOTE: GitHub implementation seems to normalise z.
         return (self._F_target if target else self._F)(torch.cat((states, actions, z), dim=-1))
 
     def B(self, states, actions, next_states, target=False):
@@ -154,4 +156,4 @@ class ForwardBackwardAgent(Agent):
         gaussian_rdv = torch.normal(mean=0., std=1., size=(num, self.P["embed_dim"]), device=self.device)
         gaussian_rdv /= torch.norm(gaussian_rdv, dim=-1, keepdim=True) + eps
         cauchy_rdv = self.cauchy.sample((num,))
-        return ((self.P["embed_dim"] ** 0.5) * cauchy_rdv * gaussian_rdv)
+        return (self.P["embed_dim"] ** 0.5) * cauchy_rdv * gaussian_rdv
