@@ -17,11 +17,11 @@ def make(agent, env, hyperparameters=dict()):
     P = default_hyperparameters[agent]
     for k, v in hyperparameters.items(): P[k] = v
     # Load agent class.
-    if agent == "actor_critic":         from ..agents.actor_critic import ActorCriticAgent as agent_class
+    if   agent == "actor_critic":       from ..agents.actor_critic import ActorCriticAgent as agent_class
     elif agent == "ddpg":               from ..agents.ddpg import DdpgAgent as agent_class
     elif agent == "diayn":              from ..agents.diayn import DiaynAgent as agent_class
     elif agent == "dqn":                from ..agents.dqn import DqnAgent as agent_class
-    elif agent == "fb":                 from ..agents.fb import ForwardBackwardAgent as agent_class
+    elif agent == "forward_backward":   from ..agents.forward_backward import ForwardBackwardAgent as agent_class
     elif agent == "mbpo":               from ..agents.mbpo import MbpoAgent as agent_class
     elif agent == "off_policy_mc":      from ..agents.off_policy_mc import OffPolicyMCAgent as agent_class
     elif agent == "ppo":                from ..agents.ppo import PpoAgent as agent_class

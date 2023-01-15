@@ -56,7 +56,7 @@ default_hyperparameters = {
     "reward_components": None # For reward decomposition (set to None to disable).
   },
 
-  "fb": {
+  "forward_backward": {
     "net_FB": [(None, 256), "R", (256, 256), "R", (256, 256), "R", (256, None)],
     "input_normaliser": None,  # Set to "box_bounds" to pre-normalise network inputs.
     "embed_dim": 100,  # Dimensionality of embedding space.
