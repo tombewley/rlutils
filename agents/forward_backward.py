@@ -18,6 +18,7 @@ class ForwardBackwardAgent(Agent):
         "Learning one representation to optimize all rewards."
         Advances in Neural Information Processing Systems 34 (2021): 13-23.
     NOTE: Currently requires a discrete action space.
+    TODO: Consult updates in "Does Zero-Shot Reinforcement Learning Exist?" (Appendix F).
     """
     def __init__(self, env, hyperparameters):
         Agent.__init__(self, env, hyperparameters)
@@ -106,6 +107,8 @@ class ForwardBackwardAgent(Agent):
         # Update both networks.
         self.optimiser.zero_grad()
         (td_loss + self.P["lambda"] * reg_loss).backward()
+        for param in self._F.parameters(): param.grad.data.clamp_(-1, 1)
+        for param in self._B.parameters(): param.grad.data.clamp_(-1, 1)
         self.optimiser.step()
         # Perform soft (Polyak) updates on targets.
         for net, target in ((self._F, self._F_target), (self._B, self._B_target)): target.polyak(net, tau=self.P["tau"])

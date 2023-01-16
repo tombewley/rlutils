@@ -65,7 +65,7 @@ default_hyperparameters = {
     "lr_FB": 5e-4,  # Learning rate for F and B networks.
     "gamma": 0.99,  # Discount factor.
     "epsilon": 0.2,  # For behaviour policies.
-    "softmax_tau": 200.,  # For softmax policies used in updates.
+    "softmax_tau": 0.2,  # For softmax policies used in updates.
     "tau": 0.005,  # Parameter for Polyak averaging of target network parameters.
     "lambda": 1.,  # Coefficient for orthonormality regularisation loss.
   },
