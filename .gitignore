@@ -2,3 +2,5 @@ wandb/
 video/
 misc/
 __pycache__/
+.idea/
+**/.DS_Store
