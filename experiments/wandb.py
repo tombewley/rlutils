@@ -4,8 +4,9 @@ from numpy import array, pad, transpose
 from pandas import DataFrame
 
 
-def get(project_name, metrics, filters, tag=None):
-    data = [{"run_names": [], "metrics": []} for _ in filters]
+def get(project_name, metrics, filters=None, tag=None):
+    if filters is None: filters = [{"": None}]  # Null filter (selects all)
+    data = [{"config": [], "metrics": []} for _ in filters]
     # TODO: Can apply filters directly to api.runs
     for run in tqdm(wandb.Api().runs(project_name)):
         if tag is None or tag in run.tags:
@@ -25,15 +26,15 @@ def get(project_name, metrics, filters, tag=None):
                 if activate: active_filters.add(i)
             if active_filters:
                 run_metrics = []
-                for step in tqdm(run.scan_history(), leave=False):
+                for step in tqdm(run.scan_history(keys=metrics), leave=False):
                     if any("video." in m for m in step): continue # NOTE: Skip video logging steps
                     run_metrics.append([step[m] if m in step else float("nan") for m in metrics])
                 for i in active_filters:
-                    data[i]["run_names"].append(run.name)
+                    data[i]["config"].append(config)
                     data[i]["metrics"].append(run_metrics)    
     dataframes = [{} for _ in filters]
     for i, f in enumerate(filters):
-        if len(data[i]["run_names"]) == 0:
+        if len(data[i]["config"]) == 0:
             print(f"Warning: filter {f} returned no runs"); continue
         # Pad with NaNs to ensure that all the same length
         max_length = max(len(r) for r in data[i]["metrics"])
@@ -42,6 +43,7 @@ def get(project_name, metrics, filters, tag=None):
         for m, data_m in zip(metrics, transpose(data_padded)):
             dataframes[i][m] = {
                 "fname": "-".join([f"{k}={v}" for k,v in f.items()]) + "---" + m + ".csv",
-                "df": DataFrame(data_m, columns=data[i]["run_names"])
+                "df": DataFrame(data_m, columns=[c["name"] for c in data[i]["config"]]),
+                "config": data[i]["config"],
             }
     return dataframes
