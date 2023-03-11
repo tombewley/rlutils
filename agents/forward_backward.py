@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 from torch.distributions.cauchy import Cauchy
 from numpy import mean
+from gymnasium.spaces.discrete import Discrete
 from gymnasium.spaces.box import Box
 
 
@@ -22,11 +23,19 @@ class ForwardBackwardAgent(Agent):
     """
     def __init__(self, env, hyperparameters):
         Agent.__init__(self, env, hyperparameters)
-        # Create forward (F) network and its target.
+        self.discrete_states = type(self.env.observation_space) == Discrete
+        # One-hot representation of discrete actions and (if applicable) states.
         n_a = self.env.action_space.n
-        one_hot_action_space = Box(shape=(n_a,), low=0., high=1.)
+        action_space = Box(shape=(n_a,), low=0., high=1.)
+        self.one_hot = torch.eye(n_a, device=self.device)
+        if self.discrete_states:
+            n_s = self.env.observation_space.n
+            state_space = Box(shape=(n_s,), low=0., high=1.)
+            self.one_hot_s = torch.eye(n_s, device=self.device)
+        else: state_space = self.env.observation_space
+        # Create forward (F) network and its target.
         embedding_space = Box(shape=(self.P["embed_dim"],), low=-float("inf"), high=float("inf"))
-        input_F = [self.env.observation_space, one_hot_action_space, embedding_space]
+        input_F = [state_space, action_space, embedding_space]
         self._F        = SequentialNetwork(code=self.P["net_FB"], input_space=input_F,
                                            output_size=self.P["embed_dim"], normaliser=self.P["input_normaliser"],
                                            device=self.device)
@@ -38,7 +47,7 @@ class ForwardBackwardAgent(Agent):
         # NOTE: B can use a featurised representation of (s, a, s').
         if "featuriser" in self.P: self.featuriser = self.P["featuriser"]
         else:
-            n_s = self.env.observation_space.shape[0]
+            n_s = state_space.shape[0]
             self.featuriser = Featuriser({"feature_names":
                 [f"s{i}" for i in range(n_s)] + [f"a{i}" for i in range(n_a)] + [f"ns{i}" for i in range(n_s)]})
         input_B = [Box(shape=(len(self.featuriser.names), ), low=-float("inf"), high=float("inf"))]
@@ -56,7 +65,6 @@ class ForwardBackwardAgent(Agent):
         # Initialise epsilon-greedy exploration.
         self.exploration = EpsilonGreedy(self.P["epsilon"], 0, 1) # NOTE: Epsilon doesn't decay.
         # Create commonly-reused constants and class instances.
-        self.one_hot = torch.eye(n_a, device=self.device)
         self.max_policy_entropy = torch.tensor(n_a, device=self.device).log()
         self.cauchy = Cauchy(torch.tensor([0.0], device=self.device), torch.tensor([0.5], device=self.device))
         self.softmax = torch.nn.Softmax(dim=1)
@@ -129,9 +137,9 @@ class ForwardBackwardAgent(Agent):
 
     def Q(self, states, z, target=False):
         """Predict state-action value Q(s, a) = F(s, a, z)ᵀz."""
-        (b, n_s), n_a = states.shape, self.env.action_space.n
-        states = states.unsqueeze(1).expand(b, n_a, n_s)
-        actions = self.one_hot.unsqueeze(0).expand(b, n_a, n_a)
+        b, n_a = states.shape[0], self.one_hot.shape[0]
+        states = states.unsqueeze(1).expand(b, n_a, *states.shape[1:])
+        actions = torch.arange(n_a).unsqueeze(0).expand(b, n_a)
         z = z.unsqueeze(1).expand(b, n_a, self.P["embed_dim"])
         return (self.F(states, actions, z, target=target) * z).sum(dim=-1)
 
@@ -142,17 +150,19 @@ class ForwardBackwardAgent(Agent):
 
     def M(self, states, actions, states_f, actions_f, next_states_f, z, target=False):
         """Predict successor measure M(s, a, s_f, a_f, s'_f, z) = F(s, a, z)ᵀB(s_f, a_f, s'_f)."""
-        return (self.F(states, self.one_hot[actions], z, target=target)
+        return (self.F(states, actions, z, target=target)
               * self.B(states_f, actions_f, next_states_f, target=target)).sum(dim=-1)
 
     def F(self, states, actions, z, target=False):
         """Predict successor features for state-action pairs."""
+        if self.discrete_states: states = self.one_hot_s[states]
         # NOTE: GitHub implementation seems to normalise z.
-        return (self._F_target if target else self._F)(torch.cat((states, actions, z), dim=-1))
+        return (self._F_target if target else self._F)(torch.cat((states, self.one_hot[actions], z), dim=-1))
 
     def B(self, states, actions, next_states, target=False):
         """Predict predecessor features for transitions."""
-        return (self._B_target if target else self._B)(self.featuriser(states, actions, next_states))
+        if self.discrete_states: states, next_states = self.one_hot_s[states], self.one_hot_s[next_states]
+        return (self._B_target if target else self._B)(self.featuriser(states, self.one_hot[actions], next_states))
 
     def _sample_z(self, num=1, eps=1e-10):
         """Sample preference vector z from a Gaussian, rescaled by a Cauchy variable."""
