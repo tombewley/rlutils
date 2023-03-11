@@ -5,6 +5,8 @@ from ..agents.stable_baselines import StableBaselinesAgent
 from time import strftime
 from tqdm import tqdm
 from gymnasium import wrappers
+from gymnasium.spaces.discrete import Discrete
+from torch import int as torch_int, float as torch_float
 
 
 P_DEFAULT = {"num_steps": 1}
@@ -61,6 +63,8 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
         else:                   assert "num_steps" in P;     by_steps = True; pbar = tqdm(total=int(P["num_steps"]), unit="step")
         force_break = False
 
+        state_dtype = torch_int if type(agent.env.observation_space) == Discrete else torch_float
+
         # Iterate through episodes.
         state = P["current_state"] if "current_state" in P else agent.env.reset()[0] # If current state specified, don't reset.
         for ep in tqdm(range(P["num_episodes"]) if not by_steps else iter(int, 1), disable=by_steps, unit="episode"):
@@ -69,7 +73,7 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
             if render_this_ep: agent.env.render()
             
             # Get state in PyTorch format expected by agent.
-            state_torch = from_numpy(state, device=agent.device)
+            state_torch = from_numpy(state, device=agent.device, dtype=state_dtype)
             
             # Iterate through timesteps.
             t = 0; done = False
@@ -79,7 +83,7 @@ def deploy(agent, P=P_DEFAULT, train=False, wandb_config=None, save_dir="agents"
                 action, extra = agent.act(state_torch, explore=train, do_extra=do_extra) # If not in training mode, turn exploration off.
                 next_state, reward, terminated, truncated, info = agent.env.step(action)
                 done = terminated or truncated  # NOTE: treat termination and truncation identically, as in old gym.
-                next_state_torch = from_numpy(next_state, device=agent.device)
+                next_state_torch = from_numpy(next_state, device=agent.device, dtype=state_dtype)
 
                 # Perform some agent-specific operations on each timestep if training.
                 if train: agent.per_timestep(state_torch, action, reward, next_state_torch, done)  # TODO: Just use terminated?
