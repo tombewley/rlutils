@@ -165,8 +165,8 @@ class ForwardBackwardAgent(Agent):
         return (self._B_target if target else self._B)(self.featuriser(states, self.one_hot[actions], next_states))
 
     def _sample_z(self, num=1, eps=1e-10):
-        """Sample preference vector z from a Gaussian, rescaled by a Cauchy variable."""
-        gaussian_rdv = torch.normal(mean=0., std=1., size=(num, self.P["embed_dim"]), device=self.device)
-        gaussian_rdv /= torch.norm(gaussian_rdv, dim=-1, keepdim=True) + eps
-        cauchy_rdv = self.cauchy.sample((num,))
-        return (self.P["embed_dim"] ** 0.5) * cauchy_rdv * gaussian_rdv
+        """Sample preference vector z on a hypersphere surface, optionally rescaled by a Cauchy variable."""
+        z = torch.normal(mean=0., std=1., size=(num, self.P["embed_dim"]), device=self.device)
+        z *= (self.P["embed_dim"] ** 0.5) / (torch.norm(z, dim=-1, keepdim=True) + eps)
+        if self.P["cauchy_z"]: z *= self.cauchy.sample((num,))
+        return z

@@ -60,6 +60,7 @@ default_hyperparameters = {
     "net_FB": [(None, 256), "R", (256, 256), "R", (256, 256), "R", (256, None)],
     "input_normaliser": None,  # Set to "box_bounds" to pre-normalise network inputs.
     "embed_dim": 100,  # Dimensionality of embedding space.
+    "cauchy_z": True,   # Whether to rescale sampled preference vectors using a Cauchy variable.
     "replay_capacity": int(1e6),  # Size of replay memory (starts overwriting when full).
     "batch_size": 128,  # Size of batches to sample from replay memory during learning.
     "lr_FB": 5e-4,  # Learning rate for F and B networks.
