@@ -6,7 +6,7 @@ from ..common.utils import col_concat, one_hot, from_numpy
 import numpy as np
 import torch
 import torch.nn.functional as F
-from gym.spaces import Box
+from gymnasium.spaces import Box
 
 
 class DiaynAgent(SacAgent):
@@ -70,11 +70,8 @@ class DiaynAgent(SacAgent):
         logs["discriminator_loss"] = np.mean(self.ep_losses_discriminator) if self.ep_losses_discriminator else 0.
         logs["pseudo_return"] = self.ep_pseudo_return
         del self.ep_losses_discriminator[:]; self.ep_pseudo_return = 0.
-        self.per_episode_deploy()
-        return logs
-
-    def per_episode_deploy(self):
         self.skill = self._sample_skill() # Resample skill for the next episode.
+        return logs
 
     def _sample_skill(self):
         """Sample skill according to probabilities in self.p_z.""" 
