@@ -18,6 +18,7 @@ default_hyperparameters = {
     "lr_disc": 3e-4, # Learning rate for discriminator.
     "num_skills": 50, # Number of skills. NOTE: Highly environment-dependent!
     "include_actions": False, # Whether or not to include action dimensions in discriminator input.
+    "include_next_states": False, # Whether or not to include next state dimensions in discriminator input.
     "log_p_z_in_reward": True, # Whether or not to include -log(p(z)) term in pseudo-reward.
   },
 

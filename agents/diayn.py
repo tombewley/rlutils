@@ -21,8 +21,10 @@ class DiaynAgent(SacAgent):
         # Augment the observation space with a one-hot skill vector before initialising SAC.
         P["aug_obs_space"] = [env.observation_space, Box(0., 1., (P["num_skills"],))]
         SacAgent.__init__(self, env, P)
-        # Create skill discriminator network, optionally accepting action dimensions as inputs alongside state dimensions.
-        input_disc = [env.observation_space, env.action_space] if self.P["include_actions"] else [env.observation_space]
+        # Create skill discriminator network, optionally accepting action and/or next state alongside current state.
+        input_disc = [env.observation_space]
+        if self.P["include_actions"]: input_disc += [env.action_space]
+        if self.P["include_next_states"]: input_disc += [env.observation_space]
         self.discriminator = SequentialNetwork(code=self.P["net_disc"], input_space=input_disc, output_size=self.P["num_skills"],
                                                normaliser=self.P["input_normaliser"], lr=self.P["lr_disc"], device=self.device)
         # Skill distribution.
@@ -41,26 +43,28 @@ class DiaynAgent(SacAgent):
         return action, extra
 
     def update_on_batch(self):
-        """Use a random batch from the replay memory to update the discriminator, pi and Q network parameters."""
-        batch = self.memory.sample(self.P["batch_size"]); states, actions = batch[:2] # Only use states and actions here.
-        if states is None: return 
+        """Use random batchrs from the replay memory to update the discriminator, pi and Q network parameters."""
+        states, actions, _, _, next_states = self.memory.sample(self.P["batch_size"], keep_terminal_next=True)
+        if states is None: return
         features, zs = torch.split(states, [self.env.observation_space.shape[0], self.P["num_skills"]], dim=1)
         if self.P["include_actions"]: features = col_concat(features, actions)
+        if self.P["include_next_states"]: features = col_concat(features, next_states[:, :-self.P["num_skills"]])
         # Update discriminator to minimise cross-entropy loss against skills.
         loss = F.cross_entropy(self.discriminator(features), zs.argmax(1))   
         self.discriminator.optimise(loss)
         self.ep_losses_discriminator.append(loss.item()) # Keeping separate prevents confusion of SAC methods.
-        # Send same batch to SAC update function and return losses.
-        return SacAgent.update_on_batch(self, batch)
+        # Execute the SAC update function for pi and Q and return losses.
+        return SacAgent.update_on_batch(self)
 
     def per_timestep(self, state, action, _, next_state, done, skill=None):
         """Operations to perform on each timestep during training."""
         # Augment state and next state with one-hot skill vector and compute diversity reward.
         if skill is None: skill = self.skill
         z = one_hot(skill, self.P["num_skills"], self.device)
-        pseudo_reward = self._pseudo_reward(
-            col_concat(state, from_numpy(action, device=self.device))
-            if self.P["include_actions"] else state, skill)
+        features = state
+        if self.P["include_actions"]: features = col_concat(features, from_numpy(action, device=self.device))
+        if self.P["include_next_states"]: features = col_concat(features, next_state)
+        pseudo_reward = self._pseudo_reward(features, skill)
         self.ep_pseudo_return += pseudo_reward
         SacAgent.per_timestep(self, col_concat(state, z), action, pseudo_reward, col_concat(next_state, z), done)
 
@@ -80,7 +84,7 @@ class DiaynAgent(SacAgent):
     def _pseudo_reward(self, features, skill):
         """Construct diversity-promoting pseudo-reward using skill discriminator network."""
         # Log conditional probability of skill according to discriminator.
-        reward = - F.cross_entropy(self.discriminator(features), torch.tensor([skill])).item()
+        reward = - F.cross_entropy(self.discriminator(features), torch.tensor([skill], device=self.device)).item()
         if self.P["log_p_z_in_reward"]:
             # Log prior probability of skill. Subtracting this means rewards are non-negative as long as the discriminator does better than chance.
             reward -= np.log(self.p_z[skill])
