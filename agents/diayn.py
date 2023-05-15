@@ -43,7 +43,7 @@ class DiaynAgent(SacAgent):
         return action, extra
 
     def update_on_batch(self):
-        """Use random batchrs from the replay memory to update the discriminator, pi and Q network parameters."""
+        """Use random batches from the replay memory to update the discriminator, pi and Q network parameters."""
         states, actions, _, _, next_states = self.memory.sample(self.P["batch_size"], keep_terminal_next=True)
         if states is None: return
         features, zs = torch.split(states, [self.env.observation_space.shape[0], self.P["num_skills"]], dim=1)
