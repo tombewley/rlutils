@@ -69,11 +69,9 @@ class ReplayMemory:
         if self.lazy_reward or mode == "relabel":
             # If have intrinsic reward function and relabel_mode=="lazy", use it to lazily compute rewards at the point of sampling.
             with torch.no_grad(): rewards = self.reward(states, actions, next_states)
-        else: rewards = torch.cat(batch.reward) 
-        if keep_terminal_next: nonterminal_mask = None
-        else: 
-            nonterminal_mask = ~torch.cat(batch.done)
-            next_states = next_states[nonterminal_mask]
+        else: rewards = torch.cat(batch.reward)
+        nonterminal_mask = ~torch.cat(batch.done)
+        if not keep_terminal_next: next_states = next_states[nonterminal_mask]
         return states, actions, rewards, nonterminal_mask, next_states
 
     def _all(self): return self.element(*zip(*self.memory))

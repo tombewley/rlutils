@@ -54,7 +54,7 @@ class SteveAgent(DdpgAgent):
                 self.ep_losses_model.append(self.model.update_on_batch(states, actions, next_states, i))
         # TODO: Verify that model.termination_function correctly screens out post-termination samples.
         # Sample another batch, this time for training pi and Q, using the model to obtain (hopefully) better Q_targets.
-        states, actions, _, nonterminal_mask, next_states = self.memory.sample(self.P["batch_size"], keep_terminal_next=True)
+        states, actions, _, _, next_states = self.memory.sample(self.P["batch_size"], keep_terminal_next=True)
         with torch.no_grad():
             sim_actions = torch.empty((self.P["ensemble_size"], self.model.horizon+1, self.P["batch_size"], actions.shape[1]), device=self.device)
             sim_rewards = torch.zeros((self.P["ensemble_size"], self.model.horizon+1, self.P["batch_size"]), device=self.device)
