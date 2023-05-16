@@ -59,7 +59,7 @@ class SacAgent(Agent):
 
     def update_on_batch(self, batch=None):
         """Use a random batch from the replay memory to update the pi and Q network parameters.
-        NOTE: If the MBPO algorithm is wrapped around SAC, a pre-sampled batch will be given."""
+        NOTE: If the DIAYN or MBPO algorithms are wrapped around SAC, a pre-sampled batch will be given."""
         states, actions, rewards, nonterminal_mask, nonterminal_next_states = self.memory.sample(self.P["batch_size"]) if batch is None else batch        
         if states is None: return 
         # Select a' using the current pi network.
