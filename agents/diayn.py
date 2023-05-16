@@ -59,7 +59,7 @@ class DiaynAgent(SacAgent):
     def per_timestep(self, state, action, _, next_state, done):
         """Operations to perform on each timestep during training."""
         z = one_hot(self.skill.item(), self.P["num_skills"], self.device)
-        pseudo_reward = self.pseudo_reward(state, from_numpy(action, device=self.device), next_state, self.skill)
+        pseudo_reward = self.pseudo_reward(state, from_numpy(action, device=self.device), next_state, self.skill).item()
         self.ep_pseudo_return += pseudo_reward
         # Augment state and next state with one-hot skill vector and store pseudo-reward (may recompute on sampling).
         SacAgent.per_timestep(self, col_concat(state, z), action, pseudo_reward, col_concat(next_state, z), done)
