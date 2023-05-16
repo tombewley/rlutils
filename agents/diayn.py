@@ -43,17 +43,15 @@ class DiaynAgent(SacAgent):
         return action, extra
 
     def update_on_batch(self):
-        """Use random batches from the replay memory to update the discriminator, pi and Q network parameters."""
-        states_aug, actions, _, _, next_states_aug = self.memory.sample(self.P["batch_size"], keep_terminal_next=True)
+        """Use a random batch from the replay memory to update the discriminator, pi and Q network parameters."""
+        states_aug, actions, _, nonterminal_mask, next_states_aug = self.memory.sample(self.P["batch_size"], keep_terminal_next=True)
         if states_aug is None: return
         states, zs = torch.split(states_aug, [self.env.observation_space.shape[0], self.P["num_skills"]], dim=1)
         # Update discriminator to minimise cross-entropy loss against skills.
         loss = F.cross_entropy(self.discriminator(states, actions, next_states_aug[:, :-self.P["num_skills"]]), zs.argmax(1))
         self._discriminator.optimise(loss)
         self.ep_losses_discriminator.append(loss.item()) # Keeping separate prevents confusion of SAC methods.
-        # Sample a new batch, compute latest pseudo-rewards, pass to the SAC update function and return losses.
-        states_aug, actions, _, nonterminal_mask, next_states_aug = self.memory.sample(self.P["batch_size"], keep_terminal_next=True)
-        states, zs = torch.split(states_aug, [self.env.observation_space.shape[0], self.P["num_skills"]], dim=1)
+        # Compute latest pseudo-rewards, pass the batch to the SAC update function and return losses.
         pseudo_rewards = self.pseudo_reward(states, actions, next_states_aug[:, :-self.P["num_skills"]], zs.argmax(1))
         return SacAgent.update_on_batch(self, (states_aug, actions, pseudo_rewards, nonterminal_mask, next_states_aug[nonterminal_mask]))
 
@@ -61,7 +59,7 @@ class DiaynAgent(SacAgent):
         """Operations to perform on each timestep during training."""
         z = one_hot(self.skill.item(), self.P["num_skills"], self.device)
         self.ep_pseudo_return += self.pseudo_reward(state, from_numpy(action, device=self.device), next_state, self.skill)
-        # Augment state and next state with one-hot skill vector, but *don't* store diversity reward (would be out-of-date when sampled).
+        # Augment state and next state with one-hot skill vector, but *don't* store pseudo-reward (would be out-of-date when sampled).
         SacAgent.per_timestep(self, col_concat(state, z), action, 0., col_concat(next_state, z), done)
 
     def per_episode(self):
