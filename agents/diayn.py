@@ -26,7 +26,7 @@ class DiaynAgent(SacAgent):
         if self.P["include_actions"]: input_disc += [env.action_space]
         if self.P["include_next_states"]: input_disc += [env.observation_space]
         self._discriminator = SequentialNetwork(code=self.P["net_disc"], input_space=input_disc, output_size=self.P["num_skills"],
-                                               normaliser=self.P["input_normaliser"], lr=self.P["lr_disc"], device=self.device)
+                                                normaliser=self.P["input_normaliser"], lr=self.P["lr_disc"], device=self.device)
         # Skill distribution.
         self.p_z = torch.full((self.P["num_skills"],), 1.0 / self.P["num_skills"], device=self.device) # NOTE: Uniform.
         # Tracking variables.
@@ -44,23 +44,25 @@ class DiaynAgent(SacAgent):
 
     def update_on_batch(self):
         """Use a random batch from the replay memory to update the discriminator, pi and Q network parameters."""
-        states_aug, actions, _, nonterminal_mask, next_states_aug = self.memory.sample(self.P["batch_size"], keep_terminal_next=True)
+        states_aug, actions, pseudo_rewards, nonterminal_mask, next_states_aug = self.memory.sample(self.P["batch_size"], keep_terminal_next=True)
         if states_aug is None: return
         states, zs = torch.split(states_aug, [self.env.observation_space.shape[0], self.P["num_skills"]], dim=1)
+        next_states = next_states_aug[:, :-self.P["num_skills"]]
         # Update discriminator to minimise cross-entropy loss against skills.
-        loss = F.cross_entropy(self.discriminator(states, actions, next_states_aug[:, :-self.P["num_skills"]]), zs.argmax(1))
+        loss = F.cross_entropy(self.discriminator(states, actions, next_states), zs.argmax(1))
         self._discriminator.optimise(loss)
         self.ep_losses_discriminator.append(loss.item()) # Keeping separate prevents confusion of SAC methods.
-        # Compute latest pseudo-rewards, pass the batch to the SAC update function and return losses.
-        pseudo_rewards = self.pseudo_reward(states, actions, next_states_aug[:, :-self.P["num_skills"]], zs.argmax(1))
+        # Optionally recompute latest pseudo-rewards, pass the batch to the SAC update function and return losses.
+        if self.P["recompute_pseudo_reward_on_sample"]: pseudo_rewards = self.pseudo_reward(states, actions, next_states, zs.argmax(1))
         return SacAgent.update_on_batch(self, (states_aug, actions, pseudo_rewards, nonterminal_mask, next_states_aug[nonterminal_mask]))
 
     def per_timestep(self, state, action, _, next_state, done):
         """Operations to perform on each timestep during training."""
         z = one_hot(self.skill.item(), self.P["num_skills"], self.device)
-        self.ep_pseudo_return += self.pseudo_reward(state, from_numpy(action, device=self.device), next_state, self.skill)
-        # Augment state and next state with one-hot skill vector, but *don't* store pseudo-reward (would be out-of-date when sampled).
-        SacAgent.per_timestep(self, col_concat(state, z), action, 0., col_concat(next_state, z), done)
+        pseudo_reward = self.pseudo_reward(state, from_numpy(action, device=self.device), next_state, self.skill)
+        self.ep_pseudo_return += pseudo_reward
+        # Augment state and next state with one-hot skill vector and store pseudo-reward (may recompute on sampling).
+        SacAgent.per_timestep(self, col_concat(state, z), action, pseudo_reward, col_concat(next_state, z), done)
 
     def per_episode(self):
         """Operations to perform on each episode end during training."""
