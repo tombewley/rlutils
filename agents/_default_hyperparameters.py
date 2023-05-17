@@ -20,7 +20,8 @@ default_hyperparameters = {
     "include_actions": False, # Whether or not to include action dimensions in discriminator input.
     "include_next_states": False, # Whether or not to include next state dimensions in discriminator input.
     "log_p_z_in_reward": True, # Whether or not to include -log(p(z)) term in pseudo-reward.
-    "recompute_pseudo_reward_on_sample": True # Whether or not to recompute latest pseudo-rewards for a sampled batch.
+    "skill_resample_freq": None, # How frequently to resample skill *within* episodes (None = never).
+    "recompute_pseudo_reward_on_sample": False # Whether or not to recompute latest pseudo-rewards for a sampled batch.
   },
 
   "ddpg": {

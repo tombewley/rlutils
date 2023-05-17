@@ -34,12 +34,11 @@ class DiaynAgent(SacAgent):
         self.ep_losses_discriminator = []
         self.ep_pseudo_return = 0.
 
-    def act(self, state, skill=None, explore=True, do_extra=False):
+    def act(self, state, explore=True, do_extra=False):
         """Augment state with one-hot skill vector, then use SAC action selection."""
-        if skill is None: skill = self.skill
-        state_aug = col_concat(state, one_hot(skill.item(), self.P["num_skills"], self.device))
+        state_aug = col_concat(state, one_hot(self.skill.item(), self.P["num_skills"], self.device))
         action, extra = SacAgent.act(self, state_aug, explore, do_extra)
-        if do_extra: extra["skill"] = skill
+        if do_extra: extra["skill"] = self.skill
         return action, extra
 
     def update_on_batch(self):
@@ -63,6 +62,8 @@ class DiaynAgent(SacAgent):
         self.ep_pseudo_return += pseudo_reward
         # Augment state and next state with one-hot skill vector and store pseudo-reward (may recompute on sampling).
         SacAgent.per_timestep(self, col_concat(state, z), action, pseudo_reward, col_concat(next_state, z), done)
+        if (self.P["skill_resample_freq"] is not None) and (self.total_t % self.P["skill_resample_freq"] == 0):
+            self.skill = self.sample_skill() # Resample skill.
 
     def per_episode(self):
         """Operations to perform on each episode end during training."""
@@ -70,7 +71,7 @@ class DiaynAgent(SacAgent):
         logs["discriminator_loss"] = mean(self.ep_losses_discriminator) if self.ep_losses_discriminator else 0.
         logs["pseudo_return"] = self.ep_pseudo_return
         del self.ep_losses_discriminator[:]; self.ep_pseudo_return = 0.
-        self.skill = self.sample_skill() # Resample skill for the next episode.
+        if self.P["skill_resample_freq"] is None: self.skill = self.sample_skill() # Resample skill.
         return logs
 
     def sample_skill(self):
