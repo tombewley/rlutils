@@ -79,7 +79,7 @@ class DiaynAgent(SacAgent):
         return torch.multinomial(self.p_z, 1)
 
     def discriminator(self, states, actions, next_states):
-        """Pass transitions to skill dicriminator network."""
+        """Pass transitions to skill discriminator network."""
         return self._discriminator(torch.cat([states] + ([actions] if self.P["include_actions"] else [])
                                              + ([next_states] if self.P["include_next_states"] else []), dim=-1))
 
