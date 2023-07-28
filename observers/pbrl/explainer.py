@@ -1,10 +1,11 @@
-from hyperrectangles.visualise import show_rectangles, show_samples
+# from hyperrectangles.visualise import show_rectangles, show_samples
 import os
 import numpy as np
 from torch import no_grad, cat
-from scipy.stats import norm
+# from scipy.stats import norm
 import matplotlib.pyplot as plt
-from matplotlib.colors import Normalize
+import seaborn as sns
+# from matplotlib.colors import Normalize
 
 
 class Explainer:
@@ -105,12 +106,30 @@ class Explainer:
         axes[2].set_xlabel("Oracle Reward"); axes[2].set_ylabel("Model Reward")
         return True
 
-    def plot_leaf_visitation(self, history_key=None):
-        """Heatmap representation of per-episode leaf visitation."""
+    def plot_leaf_visitation_heatmap(self, history_key=None):
+        """Heatmap representation of per-episode leaf visitation and decomposed return."""
+        _, axes=plt.subplots(1, 2, figsize=(30,30))
+        graph = self.pbrl.graph
+        tree = self.pbrl.model.forest[0]["tree"]
+        r = self.pbrl.model.forest[0]["r"]
+        visits = cat([self.pbrl.model.n(tree, s, a, ns).int().unsqueeze(1)
+                      for s, a, ns in zip(graph.states, graph.actions, graph.next_states)], dim=1)
+        axes[0].set_title("Leaf Visitation")
+        sns.heatmap(visits.T, annot=True, ax=axes[0], cmap="Greys")
+        axes[1].set_title("Decomposed Return")
+        sns.heatmap(visits.T * r, annot=True, ax=axes[1])
+
+    def plot_leaf_visitation_time_series(self, history_key=None):
+        """Time series representation of per-episode leaf visitation."""
         plt.figure()
-        visits = cat([self.pbrl.model.n(self.pbrl.featuriser(ep["transitions"])).int().unsqueeze(1)
-                      for _, ep in self.pbrl.graph.nodes(data=True)], dim=1)
-        plt.imshow(visits.T, interpolation="none")
+        graph = self.pbrl.graph
+        featuriser = self.pbrl.model.featuriser
+        tree = self.pbrl.model.forest[0]["tree"]
+        r = self.pbrl.model.forest[0]["r"]
+        sns.heatmap(r.unsqueeze(1).repeat(1,max(graph.ep_lengths)))
+        for s, a, ns in zip(graph.states, graph.actions, graph.next_states):
+            leaf_nums = np.array(tree.get_leaf_nums(featuriser(s, a, ns).cpu().numpy())) + 0.5
+            plt.scatter(range(len(leaf_nums)), leaf_nums, c="k", alpha=0.1)
 
     def plot_preference_graph(self, history_key=None, figsize=(12, 12)):
         raise NotImplementedError("Use self.pbrl.graph.show()")
